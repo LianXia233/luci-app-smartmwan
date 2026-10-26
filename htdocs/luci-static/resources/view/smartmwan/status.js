@@ -49,7 +49,7 @@ return view.extend({
 
 		/* —— 总览卡片 —— */
 		root.appendChild(E('div', { 'class': 'smw-cards' }, [
-			this.card('模式', s.enabled ? (s.mode == 'failover' ? '主备' : '均衡') : '已停用',
+			this.card('模式', s.enabled ? smartmwan.mode(s.mode) : '已停用',
 				s.enabled ? '' : 'enabled=0：不接管任何流量'),
 			this.card('活动出口', s.active || (s.all_dead ? '无可用出口' : '—'),
 				s.all_dead ? '全部线路不可用' : ''),

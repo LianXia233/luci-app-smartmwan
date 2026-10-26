@@ -36,7 +36,7 @@ return view.extend({
 		root.appendChild(smw.table(
 			[ '项目', '值' ],
 			[
-				[ '算法', b.algorithm + (b.algorithm != b.configured_algorithm ? '（配置为 ' + b.configured_algorithm + '）' : '') ],
+				[ '算法', smw.algorithm(b.algorithm) + (b.algorithm != b.configured_algorithm ? '（配置为 ' + smw.algorithm(b.configured_algorithm) + ' / ' + b.configured_algorithm + '）' : '') ],
 				[ '算法限制', b.limitations || '—' ],
 				[ '桶数', String(b.buckets_total) ],
 				[ '上轮搬动', String(b.moved) + ' 桶' ],

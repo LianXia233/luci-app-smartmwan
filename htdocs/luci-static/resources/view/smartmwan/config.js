@@ -49,7 +49,7 @@ return view.extend({
 				[ 'schema 版本', 'v' + cfg.data.schema_version ],
 				[ '启用', g.enabled ? '是' : '否（首次安装不改变现有路由）' ],
 				[ '模式', g.mode == 'failover' ? '主备' : '均衡' ],
-				[ '算法', g.algorithm ],
+				[ '算法', smartmwan.algorithm(g.algorithm) + '（' + g.algorithm + '）' ],
 				[ '桶数', String(g.buckets) ],
 				[ '线路数', String(cfg.data.config.wans.length) ],
 				[ '游戏规则数', String(cfg.data.config.games.length) ],

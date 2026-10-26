@@ -188,6 +188,27 @@ var smw = L.Class.extend({
 
 	/* ---------- 通用零件 ---------- */
 
+	/** 工作模式中文名（balance/failover）。未知值原样返回，不猜。 */
+	mode: function(v) {
+		return { balance: '均衡', failover: '主备' }[v] || String(v);
+	},
+
+	/** 算法中文名（与 src/config/schema.rs::Algorithm 的 UCI 值一一对应）。
+	 * 未知值原样返回；技术标识符仍可在括号里保留，便于对配置。 */
+	algorithm: function(v) {
+		return {
+			src_ip: '源地址哈希',
+			src_ip_src_port: '源地址+源端口哈希',
+			src_ip_dst_ip: '源+目的地址哈希',
+			src_ip_dst_ip_dst_port: '源+目的地址+端口哈希',
+			full_five_tuple: '完整五元组哈希',
+			least_new_connections: '新建连接数最少优先',
+			least_traffic: '实时流量最少优先',
+			weighted_hash: '加权哈希',
+			weighted_ecmp: '内核加权 ECMP'
+		}[v] || String(v);
+	},
+
 	/** 线路状态徽标：颜色只由 state 决定，不猜。 */
 	stateBadge: function(state, label) {
 		var cls = {
