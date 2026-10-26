@@ -191,17 +191,19 @@ var smw = L.Class.extend({
 			notes.map(function(n) { return E('li', {}, [ n ]) }));
 	},
 
-	/** 简单表格：head 为字符串数组，rows 为字符串数组的数组。 */
+	/** 简单表格：head 为字符串数组，rows 为字符串数组的数组。
+	 * 注意：行必须用 concat 展平进 children —— LuCI 的 E() 不递归展开嵌套数组，
+	 * 嵌套数组会被 String() 化成 "[object HTMLTableRowElement],..."（真机实测）。 */
 	table: function(head, rows) {
+		var trs = rows.map(function(r) {
+			return E('tr', { 'class': 'tr' },
+				r.map(function(c) { return E('td', { 'class': 'td' }, [ c ]) }));
+		});
 		return E('div', { 'class': 'smw-table' },
 			E('table', { 'class': 'table' }, [
 				E('tr', { 'class': 'tr table-titles' },
-					head.map(function(h) { return E('th', { 'class': 'th' }, [ h ]) })),
-				rows.map(function(r) {
-					return E('tr', { 'class': 'tr' },
-						r.map(function(c) { return E('td', { 'class': 'td' }, [ c ]) }));
-				})
-			]));
+					head.map(function(h) { return E('th', { 'class': 'th' }, [ h ]) }))
+			].concat(trs)));
 	}
 });
 

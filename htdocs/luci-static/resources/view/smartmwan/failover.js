@@ -19,7 +19,8 @@ return view.extend({
 	},
 
 	render: function(data) {
-		var smw = smartmwan;   /* LuCI require 返回单例实例，不可再 new */;
+		var smw = smartmwan;   /* LuCI require 返回单例实例，不可再 new */
+	var self = this;       /* 回调里用：普通 function 的 this 不是视图实例 */
 		var parsed = data && data.__error == null ? smw.parse(data) : null;
 
 		if (parsed == null || parsed.state == 'error')
@@ -68,7 +69,7 @@ return view.extend({
 				(f.order || []).filter(function(n) { return n != f.active }).map(function(n) {
 					return E('button', {
 						'class': 'btn cbi-button',
-						'click': ui.createHandlerFn(this, 'handleForce', n)
+						'click': ui.createHandlerFn(self, 'handleForce', n)
 					}, [ '强制切换到 ' + n ]);
 				})
 			));
