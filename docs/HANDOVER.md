@@ -6,18 +6,16 @@
 ## 1. 三十秒版
 
 * 这是 OpenWrt/ImmortalWrt **25.12+** 的多 WAN 智能选路插件，**后端 Rust、前端 LuCI JS + ucode，全项目零 Lua**；
-* 已完成：配置层、系统交互层、健康层、调度层、规则层、**事务层**（353 单测全绿）；
-* 未完成：RPC 层、守护进程入口、前端、打包。**现在装到路由器上不能用**；
-* M7 需要的两个入口本轮已备好，**但都还没有生产调用者**：
-  `firewall::probe_caps(&Nft)`（探测脚本 → `Capabilities`，`--capabilities` 与启动探测用它）与
-  `netlink::HandleOps`（拥有型 `RouteOps`，`Arc::new` 后就是 `Plane::ops`）。
-  下一轮写 `main.rs` 时**必须**从这里接，不要再自己拼 `BlockingOps` 或重造探测逻辑；
-* 规则层的说法变了：它现在**有调用者**（`transaction::Coordinator::build_plan()` →
-  `rules::compile()` → `firewall::build()`），端到端从 UCI 段一路断言到最终 nft 文本；
-  但**事务层自己也只被单测调用** —— 运行期入口（读 UCI、按周期决策、对外提供 RPC）是 M7 的活，
-  别把「代码完成」当成「设备上生效」；
-* 事务层的 nft 通道在单测里是 `FirewallExec::Sim`（**不验证 nft 语法**），真机必须换 `Real`；
-* 下一步唯一正确落点：`src/rpc/mod.rs` + `src/main.rs`（M7）。
+* 已完成：配置层、系统交互层、健康层、调度层、规则层、事务层、**RPC 层、守护进程入口**（378 单测全绿）；
+* 未完成：**前端（M8）、打包（M9）、真机验收（M10）**。后端已可运行，但页面上还点不动任何按钮；
+* 事务层现在**有运行期调用者**：守护进程主循环（`src/main.rs`）读 UCI、按周期决策、
+  调 `Coordinator::submit()`；RPC 的写方法经 `Command` 通道送回同一个循环串行执行
+  （`Scheduler` 与事务因此都只有一个所有者，别在 RPC 层另起一套）；
+* RPC 的 `apply` **不接收** UI 传来的配置副本，一律以磁盘上已保存的为准；
+  `submit()` 返回 `Receipt` 而非 `Result`，RPC 必须原样回传，不得压成 bool；
+* 端到端验证发生在 **WSL**（真 netlink + nft 1.1.3）：事务八阶段、幂等复核、崩溃后启动回收、
+  优雅关停回收、23 个 RPC 方法请求/响应全部实测通过；**目标设备未测**，M10 收口；
+* 下一步唯一正确落点：**M8 前端**（先 rpcd ucode 桥 + ACL JSON，再 7 个 JS 视图与 CSS）。
 
 ## 2. 改了会出事的八条不变式
 
@@ -131,6 +129,29 @@ bit16..23 bucket、bit12..15 gen、bit8..11 class、bit0..7 slot。
   `global.hash_seed` 曾被漏掉（改种子会重排全部新建连接却看不见），现已补上；
   新增字段时按第 4 节「三处同改」再加第四处：`config/mod.rs::diff()`。
 
+### 2.9 RPC 与守护进程的六条不变式（M7 新增，动 `rpc/mod.rs` 或 `main.rs` 前先读这段）
+
+* **RPC 层不保存业务状态**。健康快照、观测、回执都由主循环写进 `AppState` 的槽位，
+  RPC 只读；改状态的写方法经 `Command` 通道送回主循环串行执行。想在图省事在 RPC 里
+  直接调 `Scheduler::decide()` 或 `Coordinator::submit()`，就会造出第二个状态所有者 ——
+  那是数据事故，不是代码风格问题。
+* **`apply` 永远不信任 UI 传来的配置**。它没有 config 参数，只触发主循环以磁盘上
+  已保存的配置跑一轮事务（`docs/REQUIREMENTS.md` 6.4）。想「让 UI 传一份配置直接下发」
+  就等于把 save/apply 分离拆掉。
+* **回执原样透传**。`smartmwan.apply` 的 data 就是 `Receipt` 序列化，`ok=false` 的
+  回执也要 `ok:true` 的信封送出去（「失败但已回滚」与「失败且未提交」是两种运维动作）。
+  压成 bool 就丢了「内核现在是什么状态」。
+* **读方法零副作用**。不得为了「刷新」在 getStatus 里触发探测或下发；`probeNow` 是
+  唯一的例外（它会真发探测包），因此按写方法记审计。
+* **`SO_PEERCRED` 是唯一身份来源**，uid 白名单 = root + 从 `/etc/passwd` 解析的
+  `wwwdata`（**不猜常见 uid**）。socket 权限 0660；bind 前探测「已有活实例」并拒绝
+  重复启动 —— 两个实例同时写内核比没有实例更糟。
+* **关停序列由信号任务持有，不跟在主循环后面**。主循环可能楔死（netlink recv 无超时
+  就永久挂住，这是实测过的事故），跟在它后面的关停代码永远走不到。现在 SIGTERM 先发
+  停止旗标，30 秒看门狗到点强制走同一序列（限时回收 + 删 socket）后退出。
+  另：netlink 的 `SO_RCVTIMEO` 设不上必须判致命错误（`SOL_NETLINK` 层静默失败过一次，
+  详见 `docs/PROGRESS.md` §6.16）。
+
 ## 3. nftables / fw4 的事实依据（勿凭记忆改写）
 
 * firewall4 是 ucode 实现，表名 `inet fw4`；本插件用**独立的** `inet smw` 表，绝不碰 fw4 的对象；
@@ -172,13 +193,25 @@ UCI 文件 `/etc/config/smartmwan`，段类型 `smartmwan`(global) / `wan` / `ga
 |---|---|
 | 无 `nft` 二进制、无 netfilter 内核支持 | 所有 nft/`ip rule` 行为只到「文本正确 + 单测」，不能声称设备可用 |
 | `raw.githubusercontent.com` TLS 中断 | 上游源码引用改用本地已核对文件/镜像站 |
-| 沙箱网络改动有风险 | 虽然是 uid 0 且 netlink 读路径可用（`ip -o rule list` 正常），但**不在沙箱里增删路由/规则**：容器网络一坏就把环境搞没，且与目标设备无关 |
-| `cargo --offline` | 构建/测试一律加 `--offline` |
+| 沙箱网络改动有风险 | **已变通**：开发/验证迁到 WSL（Debian，独立网络命名空间）。WSL 里真 netlink + 真 nft 可用，本插件的对象只落在自己的表（101–124）与 `inet smw` 表、自己的优先级带（1000–1023），对 WSL 网络零影响；M7 的全部端到端结论都在这里取得。**仍不要**在共享网络/宿主上直接试 |
+| `cargo --offline` | 构建/测试一律加 `--offline`（WSL 内依赖已缓存；`cargo fetch` 走 tuna 镜像 + 代理） |
 
 **已解除的限制（2026-10-26）**：clippy 与 rustfmt 之前不可用（1.98.1 的组件包在镜像 404），
 把 stable 升到 1.99.1 后即可。⇒ 现在必须保持
 `cargo clippy --offline --all-targets -- -D warnings` 与 `cargo fmt --all -- --check` 双零，
 新增代码不过这两关就不要提交。
+
+**WSL 实操备忘**（下次少踩坑）：
+
+* 工作副本在 `~/luci-app-smartmwan`；`~/.cargo/bin` 不在 root 的 PATH 里，`sudo` 跑 cargo 要
+  `export PATH=/home/A11/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:...` +
+  `export CARGO_HOME=/home/A11/.cargo`；
+* Windows 侧与 WSL 侧同步用 `cp` 双向拷；**`.gitattributes` 已强制 LF**，
+  旧 clone 签出的 CRLF 工作树在 `git add` 时会自动归一化为 LF（`git status` 会显示
+  「CRLF will be replaced by LF」的警告，属预期）；
+* `/tmp` 在 WSL 重启后会丢（tmpfs）：测试配置、脚本、日志放 `~/smwtest/` 之类持久目录；
+* 跑集成测试别 `ip rule flush`（会拆掉 WSL 自己的规则，`ping` 立刻失败），要清场只删
+  本插件的对象；真把网络弄坏了就 `wsl --shutdown` 恢复。
 
 ## 6. Git 与协作约定
 
@@ -211,22 +244,21 @@ UCI 文件 `/etc/config/smartmwan`，段类型 `smartmwan`(global) / `wan` / `ga
 
 ## 7. 接手后的正确动作序列
 
-1. 跑 `cargo test --offline --lib`（期望 **353**）+ `./scripts/no-lua-check.sh`（期望 0）确认基线；
+1. 跑 `cargo test --offline --lib`（期望 **378**）+ `./scripts/no-lua-check.sh`（期望 0）确认基线；
    再加 `cargo clippy --offline --all-targets -- -D warnings` 与 `cargo fmt --all -- --check`，两个都必须零；
-2. **M6 事务层已完成**（`src/transaction.rs`，2193 行 / 21 单测）：八阶段固定顺序、单事务锁、
-   逆序回滚、last-good 快照、`reclaim()` 残留回收，规则层已在此接线。
-   动它之前先读 §2.8；它现在**只被单测调用**，别以为设备上已经在跑。
-3. **M7 RPC + main**（当前落点）：`src/rpc/mod.rs` + `src/main.rs` —— ≥19 方法 + 统一信封 +
-   `SO_PEERCRED` ACL + 审计 + tokio 监督循环（探测环 / 调度环 `Scheduler::decide()` →
-   `Coordinator::submit()` / **域名集合刷新环** / SIGHUP 重载 / SIGTERM 优雅关停且关停必须撤销自己的对象）。
-   装配要点：`Decision` 由 `Outcome` 提供（`bucket_map`/`picks`/`gen`/`now_ms`），
-   RPC 必须把 `Receipt` 原样回传（不得压缩成 bool），`is_busy()` 用来回答「现在能不能提交」。
-4. M8 前端、M9 打包、M10 真机，按 `docs/ROADMAP.md` 的 DoD 逐条收口。
-
-**M7 之后不要先写前端** —— 页面暴露的每个方法都必须有 RPC 与事务支撑，
-否则前端只能靠假数据填（这在交付判据里是明确禁止的）。
-`GameSpec` 契约（`src/system/firewall.rs:146`）已被 `build()` 消费、被规则层产出、
-被事务层串进端到端单测，**不要为了「装配方便」去改它**；要接的是调用方。
+2. **M0–M6 已完成**（配置 / 系统 / 健康 / 调度 / 规则 / 事务），`src/transaction.rs` 2212 行 / 21 单测：
+   八阶段固定顺序、单事务锁、逆序回滚、last-good 快照、`reclaim()` 残留回收。
+   动它之前先读 §2.8。
+3. **M7 已完成**（`src/rpc/mod.rs` 1934 行 / 18 单测 + `src/main.rs` 1415 行）：23 方法 + 统一信封 +
+   `SO_PEERCRED` ACL + 脱敏审计 + tokio 监督循环（探测环 / 调度环 / 域名刷新环 / SIGHUP / SIGTERM）。
+   动它们之前先读 §2.9。**别把 WSL 上的端到端通过当成设备验收** —— 目标设备的 nft 版本、
+   接口形态、管理面不失联都要在 M10 用 `FirewallExec::Real` 重跑。
+4. **M8 前端是当前落点**：先 `root/usr/share/rpcd/ucode/smartmwan.uc` 桥与 acl.d JSON
+   （ACL 按方法粒度授权，不用 `ubus: *`），再 7 个 JS 视图与 CSS。
+   页面暴露的每个方法都必须有 RPC 与事务支撑 —— 禁止用假数据填（交付判据明确禁止）。
+   `GameSpec` 契约（`src/system/firewall.rs:146`）已被 `build()` 消费、被规则层产出、
+   被事务层串进端到端单测，**不要为了「装配方便」去改它**；要接的是调用方。
+5. M9 打包、M10 真机，按 `docs/ROADMAP.md` 的 DoD 逐条收口。
 
 ## 8. 绝对不要做的事
 
@@ -244,4 +276,10 @@ UCI 文件 `/etc/config/smartmwan`，段类型 `smartmwan`(global) / `wan` / `ga
 * 不要把 `FirewallExec::Sim` 跑绿的测试当成「nft 语法已验证」写进任何结论或 UI 文案；
 * 不要在快照写入失败时回滚已验证的数据面 —— 改成 `ok=false` 并说明原因，数据面留着；
 * 不要因为「省事」把 `Coordinator::submit()` 的返回值改成 `Result` 或让 RPC 只回 bool；
+* 不要在 RPC 层另存一份业务状态或另起一个 `Scheduler`/`Coordinator` 调用点 ——
+  状态只有一个所有者（主循环），写方法走 `Command` 通道；
+* 不要让 `apply` 接受 UI 传来的配置副本；它只以磁盘上已保存的配置为准；
+* 不要把读方法改成「顺手刷一下」：读方法零副作用，探测只有 `probeNow` 会真发；
+* 不要把 netlink 的 `SO_RCVTIMEO` 写到 `SOL_NETLINK` 层（静默失败），也不要在
+  设不上超时时继续跑 —— 没有超时的 netlink recv 会永久挂住工作线程；
 * 不要把 `git reset --hard` / `push --force` 用在已有历史上；文档与代码问题用新提交修正。

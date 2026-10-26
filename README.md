@@ -36,36 +36,36 @@ tests/                  跨层集成测试
 
 ## 当前状态（2026-10-26）
 
-后端六层（config / system / health / scheduler / rules / transaction）已实现并通过单元测试，
-`cargo test --offline --lib` = **353 passed / 0 failed**。
-RPC 层、守护进程入口、前端与打包尚未完成。事务层已收口：
-一次提交固定走 `校验 → 计划 → nft 试算 → 路由下发/复核 → nft 提交/复核 → 写 last-good 快照`，
-任一步失败按逆序回滚，复核不过就不写快照。规则层从那时起**有了真正的调用者**
-（`Coordinator::build_plan()` → `rules::compile()` → `firewall::build()`）。
-本轮为 M7 补了两个必需入口：`firewall::probe_caps()`（把能力探测脚本接到 `nft -c` 执行路径，
-产出 `Capabilities`）与 `netlink::HandleOps`（可放进 `Plane::ops` 的拥有型 `RouteOps`）。
-三条限定：**事务层目前只被单测调用**；nft 通道在单测里是替身（`FirewallExec::Sim`），
-**不验证 nft 语法**，真机必须换 `FirewallExec::Real`；`probe_caps` 与 `HandleOps`
-**同样还没有生产调用者**，调用方是尚未编写的 `src/main.rs`。
-逐条完成度见 [docs/PROGRESS.md](docs/PROGRESS.md)，交付判据见 [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)。
+后端七层（config / system / health / scheduler / rules / transaction / **rpc**）+
+**守护进程入口**已实现，`cargo test --offline --lib` = **378 passed / 0 failed**。
+RPC 层提供 23 个方法（Unix socket + JSON 统一信封 + `SO_PEERCRED` ACL + 脱敏审计）；
+守护进程 `smartmwand` 常驻运行：探测环、调度环（`Scheduler::decide` → `Coordinator::submit`，
+桶图单独变化走 `replace rule` 热替换）、域名集合刷新环、SIGHUP 重载、SIGTERM 优雅关停
+（关停会撤销自己的全部内核对象）。CLI 支持 `--check / --once / --dump-nft /
+--dump-defaults / --capabilities / --print-config / --restore-last-good`。
 
-**现在这个仓库不能装到路由器上用**——守护进程入口还没实现，
-`enabled` 默认关闭且数据面一次写操作都没跑过。请把本文与文档目录当作工程记录，
-而不是安装说明。
+端到端验证在 **WSL**（真 netlink + 真 nft 1.1.3）完成：事务八阶段、幂等复核、
+崩溃（kill -9）后启动回收、优雅关停回收、23 个 RPC 方法请求/响应全部实测通过，
+并借此修掉七处「单测全绿、真机必爆」的缺陷（`docs/PROGRESS.md` §6.13–6.19）。
+**目标设备尚未验收**（M10）：设备上的 nft 版本、5G 重拨、IPv6、管理面不失联
+要以设备实测为准。
+
+未完成：**前端（M8）、打包（M9）、真机验收（M10）**。因此这个仓库现在**还装不到
+路由器上给用户用**（没有页面与安装包），但后端已经是一个能跑起来的常驻服务。
+逐条完成度见 [docs/PROGRESS.md](docs/PROGRESS.md)，交付判据见 [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)。
 
 ## 开发环境命令
 
 ```sh
-cargo test --offline --lib                           # 单元测试（沙箱内可跑，353 条）
+cargo test --offline --lib                           # 单元测试（378 条，无需网络/root/路由器）
 cargo clippy --offline --all-targets -- -D warnings  # Lint：必须 0 警告
 cargo fmt --all -- --check                           # 风格：必须无差异
 cargo build --offline --release                      # 构建 smartmwand
 ./scripts/no-lua-check.sh                            # Lua 禁用扫描（三个维度）
 ```
 
-本沙箱**没有** `nft` 二进制，也没有 netfilter 内核支持 —— 这限制了「数据面语法验证」与
-「真机验证」两件事；`clippy` / `rustfmt` 现在可用，因此 Lint 与风格结论是可以交付的。
-详见 [docs/TESTING.md](docs/TESTING.md)。
+开发/验证环境迁到了 **WSL Debian**（root 下 `/usr/sbin/nft` 1.1.3 + 真 netlink 可用）；
+`clippy` / `rustfmt` / 端到端验证都在那里跑。详见 [docs/TESTING.md](docs/TESTING.md)。
 
 ## 设计要点（读代码前先读这段）
 

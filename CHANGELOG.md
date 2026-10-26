@@ -88,6 +88,36 @@
   `version_only_reports_a_real_string`），lib 单测 350 → **353**。
   限定：沙箱没有 `nft`，这三条注入的是 `/bin/true`、`/bin/false`、`/bin/echo`，
   证明的是「探测结果 → 能力表」的判定逻辑，**不证明任何 nft 语法在本机可用**。
+* **RPC 层 `src/rpc/mod.rs`**（M7，1934 行）：Unix socket + 4 字节大端长度前缀帧 + JSON，
+  统一信封 `{ok, data, error{code,message,details}, timestamp, protocol}`，错误码取
+  `Error::code()` 的 12 个稳定值。**23 个方法**（任务书要求 ≥19）：`hello` / `getStatus` /
+  `getLines` / `getLine` / `getBalance` / `getFailover` / `getGames` / `getGameQuality` /
+  `getConnections` / `getTraffic` / `getLogs` / `getConfig` / `getCapabilities` / `validate` /
+  `save` / `diff` / `apply` / `rollback` / `forceWan` / `releaseForced` / `setMaintenance` /
+  `probeNow` / `reload`。鉴权用 `SO_PEERCRED` 取对端 uid，白名单只有 root 与从 `/etc/passwd`
+  解析出的 `wwwdata`（**不猜常见 uid**），非白名单在进入分发前就回 `permission`。
+  所有写方法（以及有网络副作用的 `probeNow`）记审计：调用者 uid/pid、**脱敏后**的参数摘要、
+  事务 id、结果与耗时。读方法零副作用——不得为了「刷新」触发探测或下发。
+  `apply` 的响应体是 `Receipt` 原样序列化（不得压成 bool），`apply` **不接收** UI 传来的
+  配置副本，一律以磁盘上已保存的为准（`docs/REQUIREMENTS.md` 6.4）。
+  状态归属是硬约束：RPC 层不保存任何业务状态，健康快照/观测/回执都由主循环写进
+  `AppState` 槽位，RPC 只读；改状态的写方法经 `Command` 通道送给主循环串行执行。
+  新增 **18 条单测**（方法表与架构文档逐条对齐、信封形状、12 个错误码映射、帧编解码与
+  超限/零长/EOF、陌生 uid 拒绝、无主循环时写方法报错、参数缺失即 validate 错误、
+  `validate` 不落任何文件、密钥字段递归脱敏、`wwwdata` 从 passwd 解析而非猜测、
+  socketpair 上取 `SO_PEERCRED`、未测量时线路状态必须是 unknown、回执原样透传）。
+* **守护进程 `src/main.rs`**（M7，1415 行）：单主循环 200ms tick——探测到期就跑探测轮
+  （内核观测 + 探测 + 流量/连接采样），然后决策；**只有桶图真的变了、或配置指纹相对上次
+  应用变了**才写数据面。桶图单独变化走 `replace rule` 热替换（只改 `smw:bucket:*` 几条，
+  不重建整表），其余走完整事务；提交失败退避 5 秒再试（否则一次失败会放大成每 tick 一次的事务风暴）。
+  域名集合刷新旁路 30 秒一轮：解析 → 对账 → 增量 `add/del element`，解析失败**绝不**回灌健康层。
+  信号：SIGHUP 重载、SIGTERM/SIGINT 优雅关停。关停序列由**信号任务**持有并带 30 秒看门狗——
+  曾经它跟在主循环后面，主循环一旦楔死，SIGTERM 就形同虚设（真机集成测试抓到的）。
+  CLI：`--config --check --once --dump-nft --dump-defaults --capabilities --print-config
+  --restore-last-good`。`--check` 与 `--dump-nft` 全程只读。
+* **工程闸门**：`.gitattributes` 强制 LF（`* text=auto eol=lf` + 显式二进制声明），
+  消除 Windows 签出 CRLF 造成的整仓假改动；lib 单测 353 → **378**，
+  `src/**/*.rs` 合计 **28,283** 行。
 * **工程闸门**：`cargo clippy --offline --all-targets -- -D warnings` 归零
   （20 条 lib 告警逐条修，只保留 1 处带中文说明的 `#[allow]`，在测试夹具里）；
   `cargo fmt --all` 建立基线，此后 `clippy` / `fmt --check` 与单测同为提交前置条件。
@@ -167,18 +197,61 @@
   属于用户必须「在应用前看得见」的变更，但变更清单里不出现，`smartmwan.diff` 的摘要就少报一项。
   同类问题只能靠「diff 覆盖 schema 全部字段」的核对来防，新增字段时除 `schema.rs` /
   `decode` / `encode` / `validate` 外还要过 `diff()` 这一关。
+* **M7 集成测试（WSL + 真 nft/netlink）抓出的六处「单测全绿、真机必爆」缺陷**。
+  它们的共同点：替身（`FakeNetlink` / `FirewallExec::Sim` / `/bin/true`）不验证真实语义，
+  所以此前 353 条单测一条都没红。逐条：
+  1. **`nft -c` 缺 `-f`**（`system/exec.rs`）。试算调用构造的是 `nft -c <脚本路径>`，
+     nft 把路径当命令解析，报 `syntax error, unexpected /` —— 真机上**每一笔**事务都会
+     死在试算阶段。正确形式是 `nft -c -f <文件>`。回归测试锁死 check 调用里
+     `-c` 与 `-f` 成对出现。
+  2. **探测脚本收尾是 `{}` 而不是 `}`**（`system/firewall.rs`）。`probe_scripts()` 的 `mk()`
+     用了格式字符串 `{{}}`，产出的是两个字面量 `{}`，整条脚本以 `{}` 结束 ——
+     **每一条** mk() 探测都被 `nft -c` 拒绝，能力表大面积假降级（`comments=false`
+     会让按标签复核与 handle 定位整体失效）。回归测试断言脚本花括号配平、
+     以单独一行 `}` 收尾、无裸 `{}` 行。
+  3. **带网关的路由用了 `scope link`**（`system/netlink.rs` / `system/route.rs`）。
+     内核对「scope link + gateway」直接 ENETUNREACH 拒绝安装；iproute2 对 `via GW`
+     一律用 global scope。回归测试断言 `default_v4` 与 plan 产出的 v4/v6 网关路由
+     都是 `RT_SCOPE_UNIVERSE`，无网关的链路级默认路由保持 link。
+  4. **netlink socket 的超时从未生效**（`system/netlink.rs`）。`SO_RCVTIMEO`/`SO_SNDTIMEO`
+     写在了 `SOL_NETLINK` 层（内核只认 `SOL_SOCKET`），setsockopt 静默 ENOPROTOOPT ——
+     没有超时的 netlink recv 会在内核不回复时**永久挂住**整个 spawn_blocking 线程
+     （实测：主循环卡死、探测轮全停、SIGTERM 都杀不掉）。另外 `tv_usec` 多乘了 1000。
+     现在超时设不上直接判致命错误，拒绝启动。
+  5. **成功 ACK 不终结会话**（`system/netlink.rs`）。内核的成功 ACK 也是 `NLMSG_ERROR`
+     （error==0），解析器只对 `code != 0` 置 `done`，于是每次**成功**的 netlink 写入都继续
+     等下一批消息直到超时 —— 实测表现是「路由装上了，却报 recv 超时并回滚」。
+  6. **路由 dump 不按请求的表过滤**（`system/netlink.rs`）。内核的 `RTM_GETROUTE` dump
+     **忽略请求里的 rtm_table**（实测请求 101 会连 main/local 的路由一起返回），
+     而代码按 24 张表各 dump 一遍：表 101 的路由被收进 24 份，`reconcile` 据此产生
+     24 条重复删除 —— 第一次成功、其余全部 ESRCH，启动/关停回收整体失败
+     （残留规则会跨重启累积）。现在按响应消息自带的 `rtm_table` 客户端过滤。
+* **`drop` 当「不分类」**（`system/firewall.rs`）。没有 LAN 设备时程序下发的是裸 `drop`：
+  prerouting 里的 drop 会断掉包括管理面在内的全部流量，把一次配置解析问题放大成全网瘫痪，
+  与项目「管理平面不失联」的核心要求直接冲突（代码注释与 issue 文案写的都是「分类规则已全部停用」）。
+  改为 `counter comment "smw:no-lan-devices"`：流量原样走 main 表（= 插件安装前行为），
+  标签留在链里供 `nft list` 与事务复核看见这个状态。
+* **`Registry::record()` 把「没有迁移」当成「未知线路」**（`system/mod.rs` 之外的 `health`）。
+  它用一个 bool 同时表达「追踪器没找到」和「没有发生状态迁移」，于是一次普通的无迁移探测
+  也会打出「收到未知线路 wan 的探测结果，已丢弃」的假日志 —— 排障时把人带偏。
+  现在两者分开，返回值只表达「有没有迁移」。
+* **关停序列跟在主循环后面**（`src/main.rs`）。主循环一旦楔死（上面第 4 条那种），
+  「先停循环再回收」的代码永远走不到，SIGTERM 形同虚设。现在关停序列由信号任务持有，
+  带 30 秒看门狗：到点主循环还没停就强制走同一序列（限时回收 + 删 socket）并退出。
+  回收本身也包了 20 秒硬超时——它要抢事务锁，楔死的事务持着锁时不能把退出也搭进去。
 
 ### 已知缺失（尚未实现，别当作已完成）
 
-* `src/rpc`（Unix socket JSON RPC + ACL + 审计）——占位。
-* `src/main`（守护进程入口与 tokio 监督循环）——占位。**因此事务层虽然完成，却还没有运行期调用者**：
-  没有任何进程会去读 UCI、按周期决策并调用 `Coordinator::submit()`。
-* 事务层的 nft 通道只在 `FirewallExec::Sim` 替名下验证过编排顺序；
-  **nft 语法与真实下发未验证**（沙箱无 `nft`、无 netfilter 内核支持），归 M10。
-* 桶轮排的热替换（`Nft::replace_rule`）已实现并有单测，但**尚未被周期循环接上**（M7）。
-* 本轮新增的 `firewall::probe_caps()` 与 `netlink::HandleOps` 同样**没有生产调用者**：
-  入口备好了，调用方是还没写的 `src/main.rs`。在 `main.rs` 落地之前，
-  「能力探测会自动降级」这句话在运行期仍然不成立，只是从「无处调用」变成「有人能调用」。
+* ~~`src/rpc`（Unix socket JSON RPC + ACL + 审计）——占位。~~ **已实现**（M7，23 方法 +
+  18 单测），但只在 WSL 真 netlink/nft 环境做过端到端验证，**未在目标设备上验证**。
+* ~~`src/main`（守护进程入口与 tokio 监督循环）——占位。~~ **已实现**（M7）。装配、
+  周期循环、桶轮换热替换、域名刷新环、SIGHUP/SIGTERM 都已接线并有真机环境的行为验证；
+  `--check` / `--dump-nft` / `--capabilities` / `--once` 等 CLI 可用。
+* **真机（目标 OpenWrt/ImmortalWrt 设备）验证：未做**。本轮的端到端验证发生在 WSL
+  （Debian + 内核 6.18 + nft 1.1.3 + 真 netlink）：事务八阶段、幂等复核、崩溃后启动回收、
+  优雅关停回收、23 个 RPC 方法的请求/响应都实测通过。但 WSL 的 nft 1.1.3 缺
+  `dynamic,timeout` 与 jhash 种子参数（能力探测如实报了不可用），设备上的 nft 版本
+  （预期更新）会给出不同结论，**必须以设备实测为准**。
 * 预置项**数据文件**未提供（`root/usr/share/smartmwan/presets/*.json`）：加载器与校验已就位，
   但因「不得编造服务器 IP/端口」，在拿到可引用来源之前不入库任何具体地址。
 * 域名集合的**周期刷新环**未接：`rules::dns_sets` 的对账与解析逻辑完成，

@@ -27,7 +27,7 @@
 | 1.2 | CSS Grid + Flexbox，样式作用域隔离 | 未开始 | 计划 `htdocs/luci-static/resources/smartmwan/smartmwan.css`，根类 `.smw-` 前缀 |
 | 1.3 | 诚实的空/加载/无权限/RPC 失败状态 | 未开始 | 后端已为每条状态准备好解释文本（见 4.6、`Outcome::explain()`），前端只需如实渲染 |
 | 1.4 | 键盘可达、无装饰性动画 | 未开始 | — |
-| 1.5 | RPC 版本握手，版本不符拒绝渲染 | 部分 | `RPC_PROTOCOL=1` 常量已定（`src/lib.rs:31`），RPC 层未实现 |
+| 1.5 | RPC 版本握手，版本不符拒绝渲染 | 完成（后端侧） | `RPC_PROTOCOL=1` 已进每个信封的 `protocol` 字段，`smartmwan.hello` 返回协议版本/进程号/运行时长；**前端「版本不符拒绝渲染」的实现在 M8** |
 
 ## 2. 数据平面（策略路由 + nftables）
 
@@ -84,10 +84,10 @@
 
 | # | 要求 | 状态 |
 |---|---|---|
-| 6.1 | ≥19 个方法，见 `docs/ARCHITECTURE.md` 的方法清单 | 未开始（`src/rpc/mod.rs` 占位） |
-| 6.2 | 统一信封 `ok/data/error{code,message}/timestamp` | 部分：`Error::code()` 已定义 12 个稳定错误码；信封未实现 |
-| 6.3 | 严格 ACL、互斥锁、审计日志、读操作无副作用 | 未开始 |
-| 6.4 | UCI `save`/`apply` 分离 | 部分：`config::Store::{save, render, diff}` 完成；事务层已提供分离所需的两个入口 —— `Coordinator::saved_config()`（apply 时以磁盘上的 `/etc/config/smartmwan` 为准，不信任 UI 传来的副本）与 `Coordinator::submit()`；RPC 层的「已保存未应用」标记未开始 |
+| 6.1 | ≥19 个方法，见 `docs/ARCHITECTURE.md` 的方法清单 | **完成（23 个）**：Unix socket + 长度前缀帧 + JSON，`src/rpc/mod.rs`；WSL 真环境端到端验证过全部方法的请求/响应，**目标设备未测** |
+| 6.2 | 统一信封 `ok/data/error{code,message}/timestamp` | **完成**：`{ok, data, error{code,message,details}, timestamp, protocol}`，`code` 取 `Error::code()` 的 12 个稳定值；信封形状与错误码映射有单测 |
+| 6.3 | 严格 ACL、互斥锁、审计日志、读操作无副作用 | **完成**：`SO_PEERCRED` 取 uid，白名单 root + `/etc/passwd` 解析出的 `wwwdata`（不猜 uid），socket 0660，bind 前拒绝重复启动；写方法（含 `probeNow`）记 uid/pid、脱敏参数摘要、事务 id、结果与耗时；读方法零副作用；互斥由 `Coordinator` 单事务锁 + 主循环串行化共同保证 |
+| 6.4 | UCI `save`/`apply` 分离 | **完成**：`save` 写盘并返回 diff 与校验报告（**不下发**）；`apply` 不接收 UI 配置副本，只触发主循环以磁盘上已保存的配置跑一轮完整事务；`diff` 方法返回「已保存未下发」的变更摘要 |
 | 6.5 | 下发前变更摘要 | 完成：`config::diff()` + `route::Diff::summary()` + `transaction::Plan::summary`（字段变更 → 本次决策（代际/桶/时间）→ 策略路由增删与冲突 → nft 程序概述），`Plan::text()` 就是将要下发的原文，UI 可先展示再提交 |
 | 6.6 | 迁移、默认值、last-good 保存与恢复 | 完成：`config::migrate()`、`Applied::{store_applied, load_applied, restore_last_good}`；事务层在**两侧复核都通过之后**才写快照 —— `state_dir/applied.json`（配置指纹 + 事务 id）与 `state_dir/applied.nft`（实际下发的原文），旧快照另存为 `applied.json.last-good`；快照写失败时 `ok=false` 且不谎报成功 |
 

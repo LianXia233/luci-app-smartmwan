@@ -144,7 +144,7 @@ DoD：
 `firewall::build()` 生成了带 `comment` 的保护/绕行规则却没登记进 `Program::tags`（复核误报「多余标签」，
 把正确提交判成失败）；`config::diff()` 漏了 `global.hash_seed`（应用前变更清单少报一项）。
 
-## M7 —— RPC 与守护进程（进行中：前置已就位，RPC 与入口未写）← **当前落点**
+## M7 —— RPC 与守护进程（代码完成，待真机验收）← **当前落点**
 
 范围：`src/rpc/mod.rs`、`src/main.rs`（原计划里的 `src/rpc/ubus.rs` **取消**：
 桥接走 rpcd 的 ucode 插件直连 Unix socket，不引入 ubus 客户端，理由见 `docs/ARCHITECTURE.md` §7）
@@ -158,13 +158,19 @@ DoD：
 
 DoD：
 
-* [ ] Unix socket + JSON，≥19 个方法（清单见 `docs/ARCHITECTURE.md`）；
-* [ ] 统一信封 `{ok, data, error{code,message}, timestamp}`，错误码取 `Error::code()`；
-* [ ] `SO_PEERCRED` 校验对端 uid，非 root/wwwdata 白名单一律 `Permission`；
-* [ ] 读写互斥：读操作无副作用（不得为了「刷新」而触发下发）；
-* [ ] 审计日志：所有写方法记调用者、参数摘要（脱敏）、事务 id、结果；
-* [ ] CLI：`--config --check --once --dump-nft --dump-defaults --capabilities --print-config --restore-last-good`；
-* [ ] tokio 监督循环：探测环 + 调度环 + SIGHUP 重载 + SIGTERM/SIGINT 优雅关停（关停必须撤销自己的对象）。
+* [x] Unix socket + JSON，**23** 个方法（≥19，清单见 `docs/ARCHITECTURE.md`）；
+* [x] 统一信封 `{ok, data, error{code,message,details}, timestamp, protocol}`，错误码取 `Error::code()`；
+* [x] `SO_PEERCRED` 校验对端 uid，白名单为 root + 从 `/etc/passwd` 解析的 `wwwdata`（不猜 uid），
+      非白名单在进入分发前一律 `permission`；
+* [x] 读写互斥：读操作无副作用（不得为了「刷新」而触发下发）；
+* [x] 审计日志：所有写方法（含 `probeNow`）记调用者 uid/pid、**脱敏后**的参数摘要、事务 id、结果与耗时；
+* [x] CLI：`--config --check --once --dump-nft --dump-defaults --capabilities --print-config --restore-last-good`；
+* [x] tokio 监督循环：探测环 + 调度环（`Scheduler::decide` → `Coordinator::submit`，桶图单独变化走
+      `replace rule` 热替换）+ 域名集合刷新环 + SIGHUP 重载 + SIGTERM/SIGINT 优雅关停；
+* [ ] **待真机验收**：以上全部在 WSL（真 netlink + nft 1.1.3）端到端实测通过 ——
+      事务八阶段、幂等复核、崩溃后启动回收、优雅关停回收、23 个 RPC 方法请求/响应均验证；
+      但目标设备的 nft 版本、接口形态（5G 重拨、双 WAN）必须以设备实测为准。
+      另需验证：管理平面不失联、IPv6 不绕过、断电重启后规则不重复（M10 矩阵）。
 
 ## M8 —— 前端（未开始）
 
