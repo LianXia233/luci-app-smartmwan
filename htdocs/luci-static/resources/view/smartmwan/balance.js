@@ -21,12 +21,12 @@ return view.extend({
 		var parsed = data && data.__error == null ? smw.parse(data) : null;
 
 		if (parsed == null || parsed.state == 'error')
-			return smartmwan.page('balance', E('div', { 'id': ROOT }, smw.states(parsed || { state: 'error', error: { message: data && data.__error } }, {
+			return 'balance', E('div', { 'id': ROOT }, smw.states(parsed || { state: 'error', error: { message: data && data.__error } }, {
 				loadingText: '正在读取均衡状态…'
-			})));
+			}));;
 
 		if (parsed.state != 'ready')
-			return smartmwan.page('balance', E('div', { 'id': ROOT }, smw.states(parsed, { emptyText: '暂无均衡数据' })));
+			return E('div', { 'id': ROOT }, smw.states(parsed, { emptyText: '暂无均衡数据' }));
 
 		var b = parsed.data;
 		var root = E('div', { 'id': ROOT, 'class': 'smw-panel' }, [
@@ -72,7 +72,7 @@ return view.extend({
 				[ '格式：桶号→槽位；— 表示该桶不分流。桶与槽位的对应关系在重启后可复现。' ]));
 		}
 
-		return smartmwan.page('balance', root);
+		return root;
 	},
 
 	handleSave: null,

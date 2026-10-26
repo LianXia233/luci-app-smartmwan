@@ -29,17 +29,17 @@ return view.extend({
 
 	render: function(data) {
 		if (data == null || data.__error != null)
-			return smartmwan.page('status', this.errorBox(data && data.__error));
+			return this.errorBox(data && data.__error);
 
 		var smw = smartmwan;   /* LuCI require 返回单例实例，不可再 new */;
 		var st = smw.parse(data.status);
 		var root = E('div', { 'id': ROOT, 'class': 'smw-panel' });
 
 		if (st.state != 'ready')
-			return smartmwan.page('status', E('div', { 'id': ROOT }, smw.states(st, {
+			return 'status', E('div', { 'id': ROOT }, smw.states(st, {
 				loadingText: '正在读取运行状态…',
 				emptyText: '守护进程尚未产出状态'
-			})));
+			}));;
 
 		var s = st.data;
 		var caps = smw.parse(data.caps);
@@ -146,7 +146,7 @@ return view.extend({
 		root.appendChild(E('div', { 'id': 'smw-status-body', 'class': 'smw-muted' },
 			[ '轮询已启动（每 5 秒）' ]));
 
-		return smartmwan.page('status', root);
+		return root;
 	},
 
 	card: function(title, value, note) {
@@ -158,10 +158,10 @@ return view.extend({
 	},
 
 	errorBox: function(msg) {
-		return smartmwan.page('status', E('div', { 'id': ROOT, 'class': 'smw-state smw-state-error alert-message warning' }, [
+		return 'status', E('div', { 'id': ROOT, 'class': 'smw-state smw-state-error alert-message warning' }, [
 			E('strong', {}, [ 'RPC 失败：' ]),
 			E('span', {}, [ msg || '无法连接守护进程，请确认 smartmwand 已启动' ])
-		]));
+		]);;
 	},
 
 	handleSave: null,

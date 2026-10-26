@@ -23,13 +23,13 @@ return view.extend({
 		var parsed = data && data.__error == null ? smw.parse(data) : null;
 
 		if (parsed == null || parsed.state == 'error')
-			return smartmwan.page('lines', E('div', { 'id': ROOT }, smw.states(parsed || { state: 'error', error: { message: data && data.__error } }, {
+			return 'lines', E('div', { 'id': ROOT }, smw.states(parsed || { state: 'error', error: { message: data && data.__error } }, {
 				loadingText: '正在读取线路…',
 				emptyText: '没有配置任何线路'
-			})));
+			}));;
 
 		if (parsed.state != 'ready')
-			return smartmwan.page('lines', E('div', { 'id': ROOT }, smw.states(parsed, { emptyText: '没有配置任何线路' })));
+			return E('div', { 'id': ROOT }, smw.states(parsed, { emptyText: '没有配置任何线路' }));
 
 		var self = this;
 		var root = E('div', { 'id': ROOT, 'class': 'smw-panel' }, [ E('h2', {}, [ '线路管理' ]) ]);
@@ -75,7 +75,7 @@ return view.extend({
 			root.appendChild(card);
 		});
 
-		return smartmwan.page('lines', root);
+		return root;
 	},
 
 	handleMaintenance: function(wan, on) {

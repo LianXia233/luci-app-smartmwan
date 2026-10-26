@@ -25,20 +25,20 @@ return view.extend({
 	render: function(data) {
 		var smw = smartmwan;   /* LuCI require 返回单例实例，不可再 new */;
 		if (data == null || data.__error != null)
-			return smartmwan.page('games', E('div', { 'id': ROOT, 'class': 'smw-state smw-state-error alert-message warning' }, [
+			return 'games', E('div', { 'id': ROOT, 'class': 'smw-state smw-state-error alert-message warning' }, [
 				E('strong', {}, [ 'RPC 失败：' ]),
 				E('span', {}, [ (data && data.__error) || '无法读取游戏路由状态' ])
-			]));
+			]);;
 
 		var games = smw.parse(data.games);
 		var quality = smw.parse(data.quality);
 		var root = E('div', { 'id': ROOT, 'class': 'smw-panel' }, [ E('h2', {}, [ '游戏路由' ]) ]);
 
 		if (games.state != 'ready')
-			return smartmwan.page('games', E('div', { 'id': ROOT }, smw.states(games, {
+			return 'games', E('div', { 'id': ROOT }, smw.states(games, {
 				loadingText: '正在读取规则…',
 				emptyText: '没有配置游戏规则'
-			})));
+			}));;
 
 		/* —— 规则列表 —— */
 		root.appendChild(smw.table(
@@ -114,7 +114,7 @@ return view.extend({
 			));
 		}
 
-		return smartmwan.page('games', root);
+		return root;
 	},
 
 	handleSave: null,
