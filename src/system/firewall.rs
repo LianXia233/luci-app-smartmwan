@@ -633,10 +633,13 @@ pub fn build(input: &Input) -> Result<Program> {
 
             if !g.macs.is_empty() {
                 if !caps.ether_sets {
+                    // 注意：这里**不是**「降级为不匹配」，而是「这个条件消失了」——
+                    // 少一个匹配项等于放宽匹配面。所以只在还有其它客户端条件可用时才允许继续，
+                    // 下面的 wants_client/matchers.is_empty() 闸门负责兜住整条规则。
                     issues.push(warn(
                         &format!("smartmwan.game[{slug}].client_macs"),
-                        "设备 nft 不支持 ether_addr 集合，该规则的 MAC 条件已降级为不匹配".into(),
-                        Some("改用客户端 IP 匹配，或升级 nft".into()),
+                        "设备 nft 不支持 ether_addr 集合，本规则的 MAC 条件无法生效".into(),
+                        Some("改用客户端 IP 匹配，或升级 nft；否则本条规则不会下发".into()),
                     ));
                 } else {
                     let name = format!("smw_g_{slug}_mac");
@@ -688,6 +691,20 @@ pub fn build(input: &Input) -> Result<Program> {
                 ));
                 p.sets.push(name.clone());
                 matchers.push(format!("ip6 saddr @{name}"));
+            }
+            // 客户端条件闸门：规则**想**限定主机（写了 MAC 或客户端 IP），但一个可用匹配项都没
+            // 剩下时（MAC 集合不被支持；或只有 IPv6 客户端条件而本机 IPv6 未启用），
+            // 必须**整条不下发**。少一个条件等于把匹配面放宽到全 LAN 的新建连接 ——
+            // 这比「规则不生效」严重得多，与前面修掉的 MAC 过滤、域名兜底是同一类缺陷。
+            let wants_client =
+                !g.macs.is_empty() || !g.client_v4.is_empty() || !g.client_v6.is_empty();
+            if wants_client && matchers.is_empty() {
+                issues.push(warn(
+                    &format!("smartmwan.game[{slug}]"),
+                    "客户端条件全部无法生效（MAC 集合不被支持，或仅有 IPv6 客户端条件而 IPv6 未启用），本条规则不下发".into(),
+                    Some("补一条 IPv4 客户端条件，或在设备上启用 IPv6 / 升级 nft".into()),
+                ));
+                continue;
             }
             let mut v4_dst = family_elems(&g.v4, Family::V4)
                 .into_iter()
@@ -1823,6 +1840,71 @@ mod tests {
             p2.text
         );
         assert!(p2.tags.iter().all(|t| !t.comment.contains("smw:game:svc")));
+    }
+
+    #[test]
+    fn mac_only_rule_is_not_emitted_when_ether_sets_unsupported() {
+        // 与前两条同类的第三处「静默放宽」：规则用 MAC 限定主机，而设备 nft 不支持
+        // ether_addr 集合时，原先只是丢掉一个匹配项 —— 结果规则变成
+        // 「全 LAN 的新建连接命中该目的网段」，范围反而被放大了。
+        // 正确做法是整条不下发（规则不生效），并给出可显示的原因。
+        let lines = vec![line("wan", 1)];
+        let map = map_all(&[1], 4);
+        let lan = vec!["br-lan".to_string()];
+        let g = GameSpec {
+            name: "mac only".into(),
+            slug: "maconly".into(),
+            priority: 20,
+            mark: marks::mark(1, marks::CLASS_GAME, 0, 0),
+            v4: vec!["203.0.113.0/24".into()],
+            v6: vec![],
+            macs: vec!["aa:bb:cc:dd:ee:ff".into()],
+            client_v4: vec![],
+            client_v6: vec![],
+            ports: vec![],
+            proto: ProtoFilter::Both,
+            dns_set: None,
+            dns_timeout_s: 90,
+        };
+        let games = [g];
+
+        // 支持 ether 集合：MAC 条件必须在文本里。
+        let mut inp = input(&lines, &map, &lan);
+        inp.games = &games;
+        let p = build(&inp).unwrap();
+        assert!(
+            p.text.contains("ether saddr @smw_g_maconly_mac"),
+            "支持时 MAC 条件必须生效：\n{}",
+            p.text
+        );
+
+        // 不支持：整条规则消失，且必须留下说明。
+        let caps_off = Capabilities {
+            ether_sets: false,
+            ..Default::default()
+        };
+        let mut inp2 = input(&lines, &map, &lan);
+        inp2.games = &games;
+        inp2.caps = &caps_off;
+        let p2 = build(&inp2).unwrap();
+        assert!(
+            !p2.text.contains("smw:game:maconly"),
+            "客户端条件全灭时不能退化成放宽规则：\n{}",
+            p2.text
+        );
+        assert!(p2
+            .tags
+            .iter()
+            .all(|t| !t.comment.contains("smw:game:maconly")));
+        assert!(
+            p2.issues
+                .iter()
+                .any(|i| i.message.contains("客户端条件全部无法生效")),
+            "必须给出可显示的原因：{:?}",
+            p2.issues
+        );
+        // 集合也不能被声明（否则留下无人引用的对象，清理时会误判所有权）。
+        assert!(!p2.text.contains("set smw_g_maconly_mac"));
     }
 
     #[test]
