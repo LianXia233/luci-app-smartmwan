@@ -903,14 +903,14 @@ pub fn teardown_program() -> String {
 pub fn include_file_text() -> String {
     let mut s = String::new();
     s.push_str("# smartmwan 静态占位（由 luci-app-smartmwan 安装）。\n");
-    s.push_str("# 这里只声明 table inet smw 与空链；具体规则由 smartmwand 运行期写入。\n");
+    s.push_str("# 这里只声明 table inet smw 与一条空的 prerouting 链；具体规则由 smartmwand 运行期写入。\n");
+    s.push_str("# output 链**不在这里声明**：它需要 `type route hook output`，该语法由守护进程在设备上\n");
+    s.push_str("# 实测能力后再决定是否使用（见 probe_scripts / Capabilities::route_hook_output），\n");
+    s.push_str("# 占位文件必须只含确定可用的语法，否则 fw4 启动就会失败。\n");
     s.push_str("# 删除本文件并重启 fw4 即可完全移除插件留下的内核对象（配合 uci delete firewall 的 include 段）。\n");
     s.push_str(&format!("table inet {TABLE} {{\n"));
     s.push_str(&format!(
         "\tchain {CHAIN_PREROUTING} {{\n\t\ttype filter hook prerouting priority {HOOK_PRIO}; policy accept;\n\t}}\n"
-    ));
-    s.push_str(&format!(
-        "\tchain {CHAIN_OUTPUT} {{\n\t\ttype filter hook prerouting priority {HOOK_PRIO}; policy accept;\n\t}}\n"
     ));
     s.push_str("}\n");
     s
@@ -1761,6 +1761,19 @@ mod tests {
         assert!(!s.contains("jhash"));
         assert!(!s.contains("meta mark set"));
         assert!(!s.contains("flush"));
+        // 关键：占位文件只能有一个 hook，且必须是确定可用的 prerouting。
+        // 曾经在这里多写了一条名为 output 却挂 prerouting 的链 —— 那是重复注册同一个
+        // hook，虽然语法合法但语义错误；而 `type route hook output` 未经设备实测，
+        // 写进静态占位会让 fw4 在不支持的内核上直接启动失败。
+        // 断言只看非注释行，否则说明文字里的词会被误当成规则内容。
+        let body: String = s
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(body.matches("hook prerouting").count(), 1, "占位文件不得重复注册 hook");
+        assert!(!body.contains("type route"), "未经能力探测的 hook 类型不得进入静态占位");
+        assert!(!body.contains("chain output"));
     }
 
     #[test]
