@@ -1,0 +1,10 @@
+target/
+Cargo.lock.bak
+*.so
+/bin/
+/build/
+ipk-split/
+openwrt/sdk*
+.DS_Store
+*.orig
+*.rej
