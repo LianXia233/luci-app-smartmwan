@@ -207,6 +207,16 @@
   `docs/TESTING.md`（测试矩阵与 10 条交付标准的诚实回答）、
   `research/luci.md` 与 `research/buildsystem.md`（去 Lua 前端与 apk/rust 打包研究笔记，
   含「必须在真实 SDK 里复验」的来源声明）。
+* **RPC 便捷设置方法（方法表 23 → 29）**：`switchMode` / `setPrimary` / `setBackupOrder` /
+  `setAlgorithm` / `failback` / `diagnostics`。前五个只是「改一个 `global` 字段 → 落盘 →
+  触发一轮事务」的薄封装（数据模型与事务原本就支持这些设置，缺的是调用形态），
+  共用 `mutate_global()` 骨架：**新值与当前相同时不写盘、也不下发**（不变式 2.5：
+  没有 diff 就不得有数据面写入）；`failback` 是**即时动作** —— 主线路此刻不够格就如实
+  返回 `switched=false`，不留一条将来悄悄生效的指令，这是它与 `forceWan`
+  （持久意志，目标暂不可用也保留指令）的分工；`setAlgorithm` 选到可能降级的算法时
+  在响应里带 `hint`。`diagnostics` 是只读聚合诊断（版本 / uptime / 校验结论 /
+  能力降级 / 线路健康 / conntrack / DNS / 最近回执 / 近期告警），**零副作用**：
+  不触发探测、不下发、不重载。
 
 ### 变更
 

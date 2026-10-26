@@ -155,7 +155,7 @@ RPC 层不得只回一个 bool —— 那等于把「内核现在是什么状态
 `code` 取 `Error::code()` 的 12 个稳定值之一（`config/validate/netlink/firewall/exec/rollback/
 permission/unsupported/timeout/no_route/io/json`），前端据此区分「可重试」与「需用户修正」。
 
-### 方法清单（23 个，M7 已落地；增改必须同步本表与 `src/rpc/mod.rs::METHODS`）
+### 方法清单（29 个；增改必须同步本表与 `src/rpc/mod.rs::METHODS`）
 
 | # | 方法 | 读/写 | 说明 |
 |---|---|---|---|
@@ -182,13 +182,25 @@ permission/unsupported/timeout/no_route/io/json`），前端据此区分「可�
 | 21 | `smartmwan.setMaintenance` | 写 | 线路维护模式开关 |
 | 22 | `smartmwan.probeNow` | 读（有网络副作用） | 立即跑一轮探测，不改配置、不下发；返回 `RoundInfo` |
 | 23 | `smartmwan.reload` | 写 | 重新读取 UCI 并触发 `on_config_change` |
+| 24 | `smartmwan.switchMode` | 写 | 切换工作模式（`balance` / `failover`）；同值时**不写盘、不下发** |
+| 25 | `smartmwan.setPrimary` | 写 | 设置主线路；拒绝不存在的、已停用的、以及已排在 `backup_order` 里的线路 |
+| 26 | `smartmwan.setBackupOrder` | 写 | 设置备用顺序（越靠前越优先）；拒绝空表、重复项、未知线路与主线路 |
+| 27 | `smartmwan.setAlgorithm` | 写 | 设置均衡算法；`weighted_ecmp` 能力可能不足，响应带 `hint` 说明会降级 |
+| 28 | `smartmwan.failback` | 写 | 手动回切（**即时动作**）：主线路此刻够格才切，不够格如实返回 `switched=false`，**不留**将来生效的指令 |
+| 29 | `smartmwan.diagnostics` | 读 | 聚合只读诊断（版本/uptime/校验/能力降级/线路/conntrack/DNS/最近回执/近期告警）；**零副作用** |
+
+> 24–28 是「便捷形态」：数据模型与事务原本就支持这些设置，这里补的是
+> 「不必先 `getConfig` 再整份 `save`」的入口。它们共用 `mutate_global()` 骨架：
+> 改一个 `global` 字段 → 落盘（内含校验）→ 替换共享槽并同步追踪器 → 请主循环跑一轮事务。
+> `failback` 与 `forceWan` 的区别必须分清：`forceWan` 表达**持久意志**
+> （目标暂不可用也保留指令，恢复后立即生效），回切是**即时动作**。
 
 并发：`transaction::Coordinator` 内部一把 `AsyncMutex` 串行化全部 `plan`/`submit`/`reclaim`（M6 已实现，
 `is_busy()` 供 RPC 即时回答）；读方法不取写锁，但读 `Scheduler` 状态用短临界区快照，避免「读到半更新的状态」。
 审计：所有写方法记录调用者 uid、方法名、参数摘要（脱敏）、transaction id、结果与耗时。
 
 **桥接层（rpcd ucode 插件）**：`root/usr/share/rpcd/ucode/smartmwan.uc` 声明 ubus 对象的
-23 个方法并转发到守护进程 Unix socket。运行依赖 `ucode-mod-socket`（**独立 apk 包**，
+29 个方法并转发到守护进程 Unix socket。运行依赖 `ucode-mod-socket`（**独立 apk 包**，
 基础 ucode/rpcd 不带——真机实证：缺了它 rpcd 加载插件直接抛
 `No module named 'socket'`，ubus 对象无法注册；已列入 DEPENDS）。插件 args 声明里
 整数 typehint 的**值是位宽提示**（8→INT8、16→INT16、64→INT64、其余→INT32，见上游

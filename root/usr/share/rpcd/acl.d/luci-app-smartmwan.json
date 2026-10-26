@@ -18,7 +18,8 @@
 					"getConfig",
 					"getCapabilities",
 					"validate",
-					"diff"
+					"diff",
+					"diagnostics"
 				]
 			}
 		},
@@ -31,7 +32,12 @@
 					"forceWan",
 					"releaseForced",
 					"setMaintenance",
-					"reload"
+					"reload",
+					"switchMode",
+					"setPrimary",
+					"setBackupOrder",
+					"setAlgorithm",
+					"failback"
 				]
 			}
 		}

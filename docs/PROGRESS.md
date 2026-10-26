@@ -347,16 +347,22 @@ FirewallVerify 阶段对 `list chain` 报 no-such-table 没有豁免（FirewallA
 > 是接手者的工作起点。核心链路（配置→事务→数据面→探测→RPC→页面）已全部真实可用
 > 并经真机验证；下列缺口均不影响已交付部分的安全性。
 
-### 9.1 RPC 接口形态（SPEC §9）——缺 6 个点名方法
+### 9.1 RPC 接口形态（SPEC §9）——6 个点名方法已补齐（2026-10-27）
 
-| 任务书方法 | 现状 | 达成路径 |
+方法表 23 → **29**；`src/rpc/mod.rs::METHODS`、`docs/ARCHITECTURE.md` §6、
+`root/usr/share/rpcd/ucode/smartmwan.uc`、`acl.d` 四处已同步，6 条新单测（388 全绿）。
+
+| 任务书方法 | 本仓方法名 | 落地形态 |
 |---|---|---|
-| `switch_mode` | 无专门方法 | `getConfig`→`save`→`apply` 语义等价 |
-| `set_primary` | 无专门方法 | 同上 |
-| `set_backup_order` | 无专门方法 | 同上 |
-| `set_algorithm` | 无专门方法 | 同上 |
-| `failback`（手动回切） | 无专门方法 | `forceWan(主线路)` 语义等价 |
-| `diagnostics`（聚合只读诊断） | **无** | 仅 getCapabilities/getLogs/CLI --check |
+| `switch_mode` | `switchMode` | 改 `global.mode` + 落盘 + 一轮事务；同值不写盘不下发 |
+| `set_primary` | `setPrimary` | 改 `global.primary`；拒绝不存在/已停用/已在 `backup_order` 里的线路 |
+| `set_backup_order` | `setBackupOrder` | 改 `global.backup_order`；拒绝空表/重复项/未知线路/主线路 |
+| `set_algorithm` | `setAlgorithm` | 改 `global.algorithm`；`weighted_ecmp` 带降级 `hint` |
+| `failback`（手动回切） | `failback` | **即时动作**：主线路够格才切，不够格如实 `switched=false` 且不留指令 |
+| `diagnostics`（聚合只读诊断） | `diagnostics` | 只读聚合视图，零副作用 |
+
+> 方法名用 camelCase 与既有 23 个方法保持一致；上表左列是任务书的 snake_case 记法，
+> 二者一一对应，不存在语义差异。
 
 其余 12 个要求的方法均已覆盖（统一信封 ✓）：status→getStatus、interfaces→getLines、
 get_config→getConfig、validate_config→validate、apply_config→apply、get_quality→getGameQuality、
