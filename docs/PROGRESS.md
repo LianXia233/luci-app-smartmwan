@@ -3,22 +3,23 @@
 > 本文件反映**当前工作树**。任何「已完成」都必须能用下面的命令复核；
 > 不能用命令复核的结论一律写成「待验证」。
 
-最后更新：0.4.0-dev 周期，M7 的第一块砖（nft 能力探测接上执行路径 + `HandleOps`）落地之后。
+最后更新：0.4.0-dev 周期，M9 打包（Makefile + apk 维护脚本 + 同源安装期文件 + GPLv3）落地之后。
 
 ## 1. 一句话状态
 
 后端七层（配置 / 系统交互 / 健康 / 调度 / 规则 / 事务 / **RPC**）+ **守护进程入口** +
-**前端**已完成，**378 个单元测试全绿**；RPC 层 23 个方法、守护进程周期循环、CLI、
-rpcd ucode 桥（方法级 ACL）+ 7 个 LuCI 视图都已落地，本仓库现在**具备装到路由器上
-跑起来的形态**；打包（M9）与目标设备验收（M10）未做。
+**前端** + **打包**已完成，**378 lib + 2 bin 单测全绿**；RPC 层 23 个方法、守护进程周期循环、
+CLI、rpcd ucode 桥（方法级 ACL）+ 7 个 LuCI 视图、OpenWrt 25.12 apk 打包（含四个维护脚本
+与同源安装期文件）都已落地，**真实 SDK 产物已通过逐项校验**；只剩目标设备验收（M10）。
 规则层的落点：M5 时它的产物只被单测喂进数据面生成器，现在由事务层真正调用
 （`Coordinator::build_plan` → `rules::compile()` → `firewall::build()` → `route::Applier`）。
 运行期入口也已存在：守护进程主循环读 UCI、按周期决策并调用 `Coordinator::submit()`。
 **本轮端到端验证发生在 WSL**（真 netlink + 真 nft 1.1.3）：事务八阶段、幂等复核、
-崩溃后启动回收、优雅关停回收、23 个 RPC 方法请求/响应全部实测通过；
+崩溃后启动回收、优雅关停回收、23 个 RPC 方法请求/响应、`--reclaim` 真实残留清场
+（1 条规则 + 8 条路由 + `inet smw` 表，二次调用幂等）全部实测通过；
 ucode 桥同样在 WSL 经 CLI 对真实守护进程往返验证（含错误信封透传）；
-浏览器侧渲染未在真实 LuCI 环境验证。借此抓出六处「单测全绿、真机必爆」的缺陷
-（见 §6.12–6.17）。
+apk 在真实 SDK（mediatek/filogic aarch64 musl）构建成功并解包核对。
+浏览器侧渲染未在真实 LuCI 环境验证。
 
 ## 2. 可复核指标
 
@@ -36,11 +37,13 @@ find src -name '*.rs' -print0 | xargs -0 cat | wc -l # 行数口径，见 §3 �
 | 命令 | 结果 |
 |---|---|
 | `cargo test --offline --lib` | `378 passed; 0 failed; 0 ignored` 用时 ~0.22s |
+| `cargo test --offline --bins` | `2 passed; 0 failed`（reclaim 配置回落两条） |
 | `./scripts/no-lua-check.sh` | 退出码 0；注入 `src/accidentally_controller.lua` 或 `require("luci.dispatcher")` 后退出码 1（已实测两个方向） |
 | `cargo clippy --offline --all-targets -- -D warnings` | **通过，0 警告** |
 | `cargo fmt --all -- --check` | **通过，无差异** |
 | `cargo build --offline` | 0 警告 |
 | `nft -c -f <脚本>` | **WSL 里可用**（root + nft 1.1.3），并以此完成端到端验证；但**目标设备未测**。WSL 的 nft 1.1.3 缺 `dynamic,timeout` 与 jhash 种子参数，能力探测如实报了「不可用」——设备上更新的 nft 会给出不同结论，必须以设备实测为准 |
+| SDK 构建 `make package/luci-app-smartmwan/compile V=s` | **BUILD OK**（mediatek/filogic aarch64 musl SDK，产物 `bin/packages/aarch64_cortex-a53/base/luci-app-smartmwan-0.4.0-r1.apk`）；全部门禁先绿再构建 |
 
 ## 3. 模块完成度
 
@@ -48,16 +51,16 @@ find src -name '*.rs' -print0 | xargs -0 cat | wc -l # 行数口径，见 §3 �
 |---|---:|---:|---|---|
 | `src/lib.rs` | 340 | 6 | 完成 | fwmark 布局、错误类型、`NS` 前缀、版本常量 |
 | `src/config/` | 4028 | 51 | 完成 | UCI 文本解析/序列化、schema v4、迁移、校验、diff、last-good |
-| `src/system/` | 8649 | 118 | 代码完成 / 待真机 | netlink、route、interface、conntrack、exec、firewall（`probe_caps`、`HandleOps`；WSL 真 nft/netlink 已验证） |
+| `src/system/` | 8652 | 118 | 代码完成 / 待真机 | netlink、route、interface、conntrack、exec、firewall（`probe_caps`、`HandleOps`、`include_file_text()`；WSL 真 nft/netlink 已验证） |
 | `src/health/` | 3310 | 50 | 完成 | 四类探测 + 滑窗指标 + 状态机 + Registry |
 | `src/scheduler/` | 3586 | 58 | 完成 | balancing / failover / latency / hysteresis / 装配层 |
 | `src/rules/` | 2270 | 51 | 完成 | matchers / presets / dns_sets / compile；**调用者是 `transaction.rs`** |
 | `src/logging.rs` | 539 | 5 | 完成 | 分级 + 环形缓冲 + 轮转 + 脱敏（`recent()`/`dropped()`） |
 | `src/transaction.rs` | 2212 | 21 | 代码完成 / 待真机 | 单事务锁 + 固定阶段编排 + 逆序回滚 + last-good 快照 + 残留回收 |
 | `src/rpc/` | 1934 | 18 | 代码完成 / 待真机 | 23 方法 + 统一信封 + `SO_PEERCRED` ACL + 脱敏审计 |
-| `src/main.rs` | 1415 | 0 | 代码完成 / 待真机 | 守护进程装配 + 周期循环 + 热替换 + 域名刷新环 + 信号 + CLI（其行为经集成测试验证，不在 lib 单测里） |
+| `src/main.rs` | 1520 | 2 | 代码完成 / 待真机 | 守护进程装配 + 周期循环 + 热替换 + 域名刷新环 + 信号 + CLI（含 `--dump-include`/`--reclaim`；reclaim 配置回落有 bin 单测） |
 
-合计 `src/**/*.rs` = **28,283** 行。`transaction.rs` 的内部构成：非测试 1,449 行
+合计 `src/**/*.rs` = **28,391** 行。`transaction.rs` 的内部构成：非测试 1,449 行
 （`Stage`/`Decision`/`FirewallExec`/`Plan`/`Receipt`/`Coordinator`），
 `#[cfg(test)] mod tests` 起于第 1450 行，测试 744 行。
 
@@ -90,18 +93,20 @@ src/            后端核心，见上表
 docs/           本文档集（要求/路线图/进度/交接/架构/配置/安全/测试）
 research/       两份上游审计（luci.md、buildsystem.md）—— 设计依据
 scripts/        no-lua-check.sh
-root/           前端装配文件（M8 已落地）：
+root/           安装期装配文件（M8/M9 已落地）：
                 usr/share/rpcd/ucode/smartmwan.uc   ← rpcd ucode 桥（23 方法转发）
                 usr/share/rpcd/acl.d/               ← 方法级 ACL（无通配）
                 usr/share/luci/menu.d/              ← 7 标签页菜单
-                etc/{config,init.d,rc.d,nftables.d} ← M9 建包时按代码常量创建
-                usr/share/smartmwan/presets         ← 与 `rules::presets::PRESET_DIR` 同名
+                etc/config/smartmwan                ← 评审快照；安装时被 --dump-defaults 产物覆盖
+                etc/init.d/smartmwan                ← procd 服务（term_timeout 30）
+                etc/nftables.d/smartmwan.nft        ← 评审快照；安装时被 --dump-include 产物覆盖
 htdocs/         LuCI 前端资源（M8 已落地）：
                 luci-static/resources/smartmwan.js        ← 共享模块（信封/四态/轮询/格式化）
                 luci-static/resources/view/smartmwan/*.js ← 7 个视图
                 luci-static/resources/smartmwan/smartmwan.css
 tests/          空（集成测试未开始）
-Makefile        不存在（打包未开始）
+Makefile        OpenWrt 包（M9 已落地）：自建交叉编译 + 同源安装期文件 + 四个 apk 维护脚本
+LICENSE         GPLv3 全文（2026-10-26 起）
 ```
 
 > 骨架目录本轮做了一次**对齐**：原来是 `root/usr/share/smartmwan/games`，
@@ -134,7 +139,8 @@ Makefile        不存在（打包未开始）
 | `2c34252` | feat(rpc,main) | M7：RPC 层 23 方法 + 守护进程入口与监督循环（+25 测试 → 378）；WSL 真 nft/netlink 端到端验证，并修掉集成测试抓出的六处「单测全绿、真机必爆」缺陷 |
 | `76bda77` | docs | M7 落地后的文档同步（数字全部重测） |
 | `7424b3b` | test(netlink,route) | 测试示例地址改用文档段（192.168.100.0/24），避免与真实设备网段重合 |
-| （本提交） | feat(frontend) | M8：rpcd ucode 桥 + 方法级 ACL + menu.d + 7 个 JS 视图 + CSS；桥接经 WSL ucode CLI 对真实守护进程端到端验证（23 方法往返） |
+| `42fbb84` | feat(frontend) | M8：rpcd ucode 桥 + 方法级 ACL + menu.d + 7 个 JS 视图 + CSS；桥接经 WSL ucode CLI 对真实守护进程端到端验证（23 方法往返） |
+| （本提交） | feat(packaging) | M9：OpenWrt 包 Makefile（自建交叉编译）+ 四个 apk 维护脚本 + 同源安装期文件 + `--dump-include`/`--reclaim` CLI + GPLv3 许可证升级；真实 SDK 构建成功并解包逐项核对 |
 
 > **关于本表的哈希**：2026-10-26 按仓库所有者的明确指示，用 `git filter-branch` 把全部提交的
 > author/committer 统一为 `LianXia233`（见 `docs/HANDOVER.md` §6），并 `--force-with-lease` 强推。
@@ -251,18 +257,21 @@ Makefile        不存在（打包未开始）
 
 ## 7. 下一步（严格顺序）
 
-1. ~~**M7 RPC + main**~~（本轮已完成）：`src/rpc/mod.rs`（23 方法 + 统一信封 +
+1. ~~**M7 RPC + main**~~（已完成）：`src/rpc/mod.rs`（23 方法 + 统一信封 +
    peer-cred ACL + 脱敏审计）+ `src/main.rs`（装配、探测环、调度环 `Scheduler::decide` →
    `Coordinator::submit`、桶轮排 `replace rule` 热替换、域名集合刷新环、SIGHUP/SIGTERM、
    CLI）。`submit()` 返回 `Receipt` 而非 `Result`，RPC 层把回执原样交给 UI。
-   端到端验证在 WSL 完成（事务八阶段 / 幂等 / 崩溃回收 / 关停回收 / 23 方法请求响应）；
-   **目标设备上的验收归 M10**。
-2. **M8 前端**：先 ucode 桥与 ACL，再 7 个 JS 视图与 CSS；
-3. **M9 打包**：Makefile + apk + procd + `/etc/nftables.d` 片段（由代码生成，保证同源）+
-   `root/usr/share/smartmwan/presets/` 目录与 README（数据文件仍需权威来源）；
+   端到端验证在 WSL 完成（事务八阶段 / 幂等 / 崩溃回收 / 关停回收 / 23 方法请求响应）。
+2. ~~**M8 前端**~~（已完成）：ucode 桥与 ACL + 7 个 JS 视图与 CSS；
+   桥接经 WSL ucode CLI 对真实守护进程端到端验证。
+3. ~~**M9 打包**~~（已完成）：Makefile + apk + procd + `/etc/nftables.d` 片段
+   （由 `--dump-include` 生成，保证同源）+ 四个维护脚本（define 名按
+   `package-pack.mk` 实测）+ 真实 SDK 构建与解包核对；
+   `--reclaim` 在 WSL 对真实残留（1 规则 + 8 路由 + `inet smw` 表）清场并幂等复核。
 4. **M10 自动化 + 真机**：把 M2/M6/M7 的「待真机」条目逐条改成「完成」——
    nft 通道用 `FirewallExec::Real` 重跑同一批结论，5G 重拨、IPv6 绕过、断电重启幂等
-   按 `docs/TESTING.md` 的设备矩阵验证。
+   按 `docs/TESTING.md` 的设备矩阵验证；浏览器侧 LuCI 渲染验收也在这里；
+   另：设备 SSH 口令与 Web 口令不一致的问题需要仓库所有者澄清后才能上真机。
 
 ## 8. 已知阻塞与风险
 
@@ -271,6 +280,7 @@ Makefile        不存在（打包未开始）
 | 沙箱/开发机无目标设备的 nft 与接口形态 | 无法在开发环境复现目标设备的 nft 版本、5G 模组、双 WAN 拓扑 | **部分解除**：WSL（Debian + 内核 6.18 + nft 1.1.3 + 真 netlink）上完成了端到端验证 —— 事务八阶段、幂等复核、崩溃后启动回收、优雅关停回收、23 个 RPC 方法请求/响应；并借此抓出七处真机必爆缺陷（§6.13–6.19）。WSL 的 nft 1.1.3 缺 `dynamic,timeout` 与 jhash 种子参数（能力探测如实报不可用），设备上更新的 nft 会给出不同结论，**必须以设备实测为准**；M2/M6/M7 的「待真机」条目归 M10 |
 | ~~无 clippy / rustfmt~~ | ~~无法交付 Lint 与风格结论~~ | **已解除**：工具链 1.99.1 下 clippy 0 警告 + rustfmt 基线已建立（`32b97ad`） |
 | 无目标真机 | 5G 重拨、IPv6 绕过、断电重启幂等、管理面不失联 等只能在 M10 验证 | 相关逻辑已有代码级防护，且 WSL 上验证了「崩溃→重启回收→重装」与「关停回收」两条生命周期；设备特有的重拨/掉电场景结论必须留白 |
+| 设备 SSH 口令被拒 | 无法上真机执行 M10 矩阵 | Web（LuCI）登录同一口令成功（HTTP 302 对 403 判别），但 dropbear/ubus 全部拒绝；已按所有者指示停止探测。**需要所有者澄清口令或改发公钥** |
 | 游戏预置库需要权威来源 | 违反「不得编造服务器 IP/端口」的风险 | 加载器与校验已就位（`rules::presets`），但**不内置任何数据**；`source` 字段缺失即整条拒绝，单测 `no_preset_is_bundled_in_code` + `missing_source_is_error` 钉住 |
 | `getaddrinfo` 不返回 TTL | 域名集合的元素寿命只能取一个下界，偏长会留残值、偏短会加重解析 | 用 `global.dns_ttl_floor_s`（默认 300s，校验 30..86400）作为折中并在 schema 注释、`dns_sets.rs` 模块头、`docs/CONFIGURATION.md` 三处如实写明「这是不完备而非最优」；真 TTL 需换解析器（会引入依赖面），暂未做 |
 | DNS 解析结果 ≠ 真实连接目的 | CDN 任播 / GeoDNS / 轮询会让域名规则命中不足 | 属产品固有限制，UI 与文档必须并列展示；DoH/DoT 流量无法从 53 端口识别，不做 SNI/DPI 识别 |

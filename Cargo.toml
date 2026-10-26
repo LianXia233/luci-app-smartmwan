@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.77"
 authors = ["luci-app-smartmwan 维护者"]
 description = "OpenWrt 25.12 / ImmortalWrt 多 WAN 策略路由守护进程（firewall4 + nftables + 策略路由）"
-license = "GPL-2.0-or-later"
+license = "GPL-3.0-or-later"
 publish = false
 
 [[bin]]

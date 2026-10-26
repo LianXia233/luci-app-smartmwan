@@ -7,7 +7,7 @@
 
 DoD：
 
-* [x] Rust crate 骨架、GPLv2 许可证、`.gitignore`；
+* [x] Rust crate 骨架、GPLv3 许可证、`.gitignore`；
 * [x] 依赖最小化并在清单里逐条写明取舍理由；
 * [x] 禁 Lua 自动化检查 `scripts/no-lua-check.sh`，并**实测两个方向**（干净 → 0，注入 → 1）；
 * [x] fwmark 布局定稿并写成不变式单测（魔数、槽位、`RULE_MASK` 只隔离槽位）。
@@ -144,7 +144,7 @@ DoD：
 `firewall::build()` 生成了带 `comment` 的保护/绕行规则却没登记进 `Program::tags`（复核误报「多余标签」，
 把正确提交判成失败）；`config::diff()` 漏了 `global.hash_seed`（应用前变更清单少报一项）。
 
-## M7 —— RPC 与守护进程（代码完成，待真机验收）← **当前落点**
+## M7 —— RPC 与守护进程（代码完成，待真机验收）
 
 范围：`src/rpc/mod.rs`、`src/main.rs`（原计划里的 `src/rpc/ubus.rs` **取消**：
 桥接走 rpcd 的 ucode 插件直连 Unix socket，不引入 ubus 客户端，理由见 `docs/ARCHITECTURE.md` §7）
@@ -178,20 +178,31 @@ DoD：
 
 * [x] 7 个标签页 JS 视图 + `smartmwan.css`（Grid + Flexbox，`.smw-` 作用域）；
 * [x] rpcd ucode 桥 `root/usr/share/rpcd/ucode/smartmwan.uc`（零 Lua）；
-* [ ] `menu.d` / `acl.d` JSON，ACL 按方法粒度授权，不用 `ubus: *`；
+* [x] `menu.d` / `acl.d` JSON，ACL 按方法粒度授权（15 读 / 8 写 / `probeNow` 单独分组），不用 `ubus: *`；
 * [x] 空/加载/无权限/RPC 失败四态如实渲染；后端 note 直接透传，不写「正常」占位；
-* [ ] `poll.add/remove` 生命周期成对，切页必须停轮询。
+* [x] `poll.add/remove` 生命周期成对（模块级句柄自持有，根容器离开 DOM 即自停轮询）。
 
-## M9 —— 打包与安装（未开始）
+浏览器渲染与真机 LuCI 集成验收归 M10。
+
+## M9 —— 打包与安装（已完成，2026-10-26）
 
 DoD：
 
-* [ ] OpenWrt 包 Makefile（`rust-package.mk` 路径优先，否则自建交叉编译 + 架构探测）；
-* [ ] **apk** 产物与维护脚本（pre/post inst、rmupgrade），依赖声明不含 `luci-lua-runtime`；
-* [ ] `root/etc/config/smartmwan`（默认 `enabled=0`）、`root/etc/init.d/smartmwan`（procd）、
-      `root/etc/nftables.d/smartmwan.nft`（由 `firewall::include_file_text()` 生成，保证与代码同源）；
-* [ ] 升级/卸载/回滚：卸载必须清干净自己的对象，且**不删用户配置**（配置归 `conffiles`）；
-* [ ] 产物校验（大小/架构/依赖闭包）与可复现性说明（锁定 `Cargo.lock`、固定 crate 版本）。
+* [x] OpenWrt 包 Makefile（本 SDK 无 `rust-package.mk`，按研究笔记兜底自建交叉编译：
+      目标三元组由 `CONFIG_ARCH`+`LIBC` 推导（注意包上下文里 kconfig 值带引号，需剥引号），
+      未知组合直接报错不静默回落；链接器用 SDK 的 `TARGET_CC`；`--offline` + 锁定 `Cargo.lock`）；
+* [x] **apk** 产物与维护脚本（define 名按 `include/package-pack.mk` 的 `BuildPackVariable`
+      实测为 `preinst`/`postinst`/`prerm`/`postrm`，自造名字会被静默忽略），
+      依赖声明不含任何 Lua 包（`firewall4 +nftables +luci-base +rpcd`）；
+* [x] `root/etc/config/smartmwan`（默认 `enabled=0`）、`root/etc/init.d/smartmwan`（procd）、
+      `root/etc/nftables.d/smartmwan.nft`（由 `smartmwand --dump-include` 生成，与代码同源；
+      apk 内容与仓库快照逐字节一致已验证）；
+* [x] 升级/卸载：`preinst` 停旧实例让守护进程优雅回收；`prerm` 停服务 + disable +
+      `--reclaim` 兜底清场；`postrm` 清 firewall include 段与运行期状态文件；
+      **不删用户配置**（配置归 `conffiles`，apk 内 `conffiles_static` 带校验和）；
+* [x] 产物校验：aarch64 静态 ELF（musl，无 NEEDED）、安装树 20 文件齐全、
+      同源文件反解比对一致、PKGINFO 许可证 `GPL-3.0-or-later`；
+      可复现性说明见 `docs/TESTING.md` §5。
 
 ## M10 —— 自动化与真机验收（未开始）
 

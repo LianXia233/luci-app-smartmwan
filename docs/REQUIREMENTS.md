@@ -100,20 +100,20 @@
 
 | # | 要求 | 状态 |
 |---|---|---|
-| 8.1 | Makefile（OpenWrt 包）+ Rust 交叉编译 + 架构探测 | 未开始 |
-| 8.2 | 依赖声明、**APK** 产物 | 未开始（25.12 已用 apk 取代 opkg，见 §10） |
-| 8.3 | procd 服务脚本 | 未开始（`root/etc/init.d/` 空） |
-| 8.4 | LuCI menu.d + rpcd acl.d JSON | 未开始（`root/usr/share/...` 空） |
-| 8.5 | UCI 默认配置（**默认关闭**） | 完成（代码层：`defaults_uci_text()`，`enabled=false`，单测 `defaults_are_safe_disabled`）；文件未落地 |
-| 8.6 | nftables 安装片段 | 未开始 |
-| 8.7 | 升级/卸载/回滚脚本，产物校验，可复现性说明 | 未开始 |
-| 8.8 | 绝不覆盖用户网络配置 | 完成（设计上）：本插件只写 `/etc/config/smartmwan` 与 `/etc/nftables.d/smartmwan.nft`，对 `network`/`firewall` 只读 |
+| 8.1 | Makefile（OpenWrt 包）+ Rust 交叉编译 + 架构探测 | 完成：自建交叉编译（本 SDK 无 `rust-package.mk` 已实证），三元组由 `CONFIG_ARCH`+`LIBC` 推导、未知组合报错，真实 SDK（aarch64 musl）构建通过 |
+| 8.2 | 依赖声明、**APK** 产物 | 完成：`+firewall4 +nftables +luci-base +rpcd`（无任何 Lua 包），apk 产物经 `apk adbdump`/`apk extract` 校验（`docs/TESTING.md` §5） |
+| 8.3 | procd 服务脚本 | 完成：`root/etc/init.d/smartmwan`（term_timeout 30，respawn 阈值放宽） |
+| 8.4 | LuCI menu.d + rpcd acl.d JSON | 完成（M8）：7 标签页菜单 + 方法级 ACL（无通配） |
+| 8.5 | UCI 默认配置（**默认关闭**） | 完成：安装期由 `smartmwand --dump-defaults` 生成（与代码同源），`enabled='0'`；`defaults_are_safe_disabled` 单测钉住 |
+| 8.6 | nftables 安装片段 | 完成：安装期由 `smartmwand --dump-include` 生成（单一 prerouting hook，占位语法保守） |
+| 8.7 | 升级/卸载/回滚脚本，产物校验，可复现性说明 | 完成：四维护脚本（preinst/postinst/prerm/postrm，define 名按 `package-pack.mk` 实测）；卸载走 `--reclaim` 且不删用户配置（conffiles）；产物校验与可复现说明见 `docs/TESTING.md` §5 |
+| 8.8 | 绝不覆盖用户网络配置 | 完成（设计上）：本插件只写 `/etc/config/smartmwan` 与 `/etc/nftables.d/smartmwan.nft`，对 `network`/`firewall` 只读（postinst 只幂等添加自己的 include 段） |
 
 ## 9. 测试与验收
 
 | # | 要求 | 状态 |
 |---|---|---|
-| 9.1 | 功能测试 + 工程测试 | 部分：**353** 个 lib 单测全绿（`config 51 / system 112 / health 49 / scheduler 58 / rules 51 / logging 5 / lib 6 / transaction 21`）；工程闸门已在沙箱实测通过 —— `cargo clippy --offline --all-targets -- -D warnings`（0）、`cargo fmt --all -- --check`（无差异）、`cargo build --offline`（0 警告）、`./scripts/no-lua-check.sh`（退出 0）；`tests/`（集成）未开始；事务层的 21 条走的是 `FirewallExec::Sim` 替身通道，**不等于 nft 语法已验证**；能力探测的 3 条新单测注入 `/bin/true`、`/bin/false`、`/bin/echo`，只证明「探测结果 → 能力表」的判定逻辑 |
+| 9.1 | 功能测试 + 工程测试 | 部分：**378** 个 lib 单测 + **2** 个 bin 单测全绿；工程闸门零告警；WSL 真 nft/netlink 端到端已验证（事务八阶段、回收、23 方法、`--reclaim` 清场）；`tests/`（集成）未开始；真机矩阵归 M10 |
 | 9.2 | 禁 Lua 自动化检查 | 完成 |
 | 9.3 | 10 条交付判据 | 进行中，逐条见 `docs/TESTING.md` §交付判据 |
 | 9.4 | 绝不把模拟数据当实时状态展示 | 设计上保证：未测量首轮会产出显式 note「尚未完成首轮探测…」，`Outcome` 无数据时 `carries_traffic()==false` |
@@ -155,18 +155,17 @@
 5 算法 + 主备切换                 完成
 6 游戏路由                        代码完成（rules/*，51 单测）；已由事务层接线；
                                   预置数据文件仍需权威来源
-7 LuCI 页面                       未开始
-8 CSS                             未开始
-9 打包                            未开始
-10 自动化 + 真机验证              部分（Lua 检查完成；真机未做）
+7 LuCI 页面                       完成（M8：7 视图 + ucode 桥；浏览器渲染待 M10）
+8 CSS                             完成（M8：smartmwan.css，.smw- 作用域）
+9 打包                            完成（M9：Makefile + apk 四维护脚本 + 同源安装期文件；
+                                  真实 SDK 构建并解包校验通过）
+10 自动化 + 真机验证              部分（Lua 检查、单测、WSL 端到端完成；真机未做）
 11 修复 + 最终报告                持续
 ```
 
-当前正确落点是第 7 步之前的 **M7：RPC + 守护进程入口**（`src/rpc/mod.rs`、`src/main.rs`）。
-事务层已经把「配置→规则→nft 文本→下发→回读→回滚→快照」串成一次提交，缺的是运行期：
-谁读 UCI、谁按周期决策、谁把 `Receipt` 交给 UI、谁在收到 SIGTERM 时清场。
-M7 需要的两块地基本轮已就位（`firewall::probe_caps()` 出能力表、`netlink::HandleOps` 出
-`Arc<dyn RouteOps>`），所以装配 `transaction::Plane` 不再缺入口 —— 缺的仍然只有调用它们的人。
+当前正确落点是 **M10：真机验收**。全部代码路径（守护进程、RPC、前端、打包）都已落地，
+WSL 端到端与真实 SDK 构建都已通过；剩下的每一条结论都必须在目标设备上取得
+（`docs/TESTING.md` §7 的设备矩阵），前置问题是设备 SSH 口令需要所有者澄清。
 
 安全与数据面正确性优先于界面打磨 —— 因此 §2、§5、§7 的「需真机」条目在没有设备时一律标注为未验证，
 不用界面完成度掩盖它们。

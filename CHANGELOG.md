@@ -139,6 +139,28 @@
   **验证边界**：桥接已在 WSL 用 ucode CLI（从源码构建的 1.x）对真实守护进程做过
   端到端测试 —— 23 个方法全部往返正确、错误信封透传正确；**浏览器侧渲染未在真实
   LuCI 环境验证**（无 SDK/设备），归 M10。
+* **打包 M9**：OpenWrt/ImmortalWrt 25.12（apk 时代）包 `Makefile` —— 本 SDK 没有
+  `rust-package.mk`，按研究笔记的兜底方案自建交叉编译：目标三元组由 SDK 的
+  `CONFIG_ARCH`+`LIBC` 推导（包上下文里 kconfig 值带引号，先剥引号），未知组合**直接报错**
+  而不静默回落宿主机三元组；链接器用 SDK 的 `TARGET_CC`；`--offline` + 锁定 `Cargo.lock`。
+  安装期文件与代码**同源**：`/etc/config/smartmwan` 由 `smartmwand --dump-defaults` 生成、
+  `/etc/nftables.d/smartmwan.nft` 由 `smartmwand --dump-include` 生成，
+  仓库 `root/` 下的同名文件只是评审快照。`PKGARCH:=all`（静态 musl 二进制无架构绑定依赖，
+  架构约束由交叉编译目标保证）；`DEPENDS:=+firewall4 +nftables +luci-base +rpcd`，
+  不含任何 Lua 包；`/etc/config/smartmwan` 列入 `conffiles`（卸载不删用户配置）。
+  apk 维护脚本 define 名按 `include/package-pack.mk` 的 `BuildPackVariable` 实测：
+  `preinst`（安装/升级前停旧实例，让守护进程优雅撤销内核对象）、`postinst`（幂等挂
+  firewall include 段；enable/start 由构建系统生成的 `default_postinst` 完成）、
+  `prerm`（stop + disable + `--reclaim` 兜底清场）、`postrm`（清 include 段与运行期状态）。
+  **自造 define 名（如 `post-install`）会被构建系统静默忽略** —— 首次构建就踩了这个坑，
+  用 `apk adbdump` 解包核实后才修正。
+  守护进程新增两个 CLI：`--dump-include`（打包同源生成用）、`--reclaim`（一次性回收，
+  卸载/排障用；配置损坏或缺失时按默认参数继续清场，所有权判定只用常量：
+  优先级带 1000-1023、表号 101-124、`OUR_RTPROT`、`inet smw` 表名）。
+  `netlink.rs` 的 `SO_RCVTIMEO/SO_SNDTIMEO` 时间值改经 `i64` 中转，不再点名
+  `libc::time_t`/`suseconds_t` 别名（musl 1.2.0 起它们变 64 位并标记弃用，点名会刷警告）。
+  新增 **2 条 bin 单测**（reclaim 配置回落），lib 378 + bin 2；
+  `src/**/*.rs` 合计 **28,391** 行。
 * **工程闸门**：`cargo clippy --offline --all-targets -- -D warnings` 归零
   （20 条 lib 告警逐条修，只保留 1 处带中文说明的 `#[allow]`，在测试夹具里）；
   `cargo fmt --all` 建立基线，此后 `clippy` / `fmt --check` 与单测同为提交前置条件。
@@ -155,6 +177,10 @@
 
 ### 变更
 
+* **许可证从 GPL-2.0 升级为 GPL-3.0（2026-10-26，按仓库所有者指示）**：
+  `LICENSE` 换为 GPLv3 全文，`Cargo.toml` 与 `Makefile` 的 SPDX 标识符改为
+  `GPL-3.0-or-later`，README / ROADMAP / TESTING 的许可证描述同步更新。
+  早期提交（`f90e088`）里的 GPLv2 声明是历史事实，按「不改写已提交历史」的约定留痕。
 * 骨架目录 `root/usr/share/smartmwan/games/` 改名为 `presets/`，与代码常量
   `rules::presets::PRESET_DIR = "/usr/share/smartmwan/presets"` 对齐。两处不一致的后果是
   「装了包但预置目录不存在」或「用户往 games 里放文件读不到」；今后路径以代码常量为唯一权威。

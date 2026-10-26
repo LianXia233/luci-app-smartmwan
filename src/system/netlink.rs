@@ -1159,9 +1159,12 @@ impl Connection {
         // 2. `tv_usec` 本来就是微秒，`subsec_micros()` 不能再乘 1000；
         // 3. 返回值必须检查：超时设不上就等于把「挂住」当默认行为，必须致命。
         unsafe {
+            // 经 i64 中转但不点出 `libc::time_t`/`suseconds_t` 别名：musl 1.2.0
+            // 起这两个别名将变为 64 位并标记弃用，点名会在一目标上刷警告。
+            // 语义不变（两侧都是足够宽的整数），glibc 目标同样编译通过。
             let tv = libc::timeval {
-                tv_sec: f.as_secs() as libc::time_t,
-                tv_usec: f.subsec_micros() as libc::suseconds_t,
+                tv_sec: i64::try_from(f.as_secs()).unwrap_or(i64::MAX) as _,
+                tv_usec: i64::from(f.subsec_micros()) as _,
             };
             for (name, opt) in [
                 ("SO_RCVTIMEO", libc::SO_RCVTIMEO),

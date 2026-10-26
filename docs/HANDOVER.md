@@ -6,18 +6,20 @@
 ## 1. 三十秒版
 
 * 这是 OpenWrt/ImmortalWrt **25.12+** 的多 WAN 智能选路插件，**后端 Rust、前端 LuCI JS + ucode，全项目零 Lua**；
-* 已完成：配置层、系统交互层、健康层、调度层、规则层、事务层、**RPC 层、守护进程入口**（378 单测全绿）；
-* 未完成：**打包（M9）、真机验收（M10）**。前端（M8）已落地：rpcd ucode 桥 + 方法级 ACL + 7 个视图，
-  桥接在 WSL 经 ucode CLI 对真实守护进程端到端验证过；浏览器渲染未验，归 M10；
+* 已完成：配置层、系统交互层、健康层、调度层、规则层、事务层、**RPC 层、守护进程入口、
+  前端（M8）、打包（M9）**（378 lib + 2 bin 单测全绿，clippy/fmt 双零）；
+* M9 产物已在真实 SDK（aarch64 musl）构建成功并解包核对：四个维护脚本、同源安装期文件、
+  conffiles、aarch64 静态二进制全部就位；`--reclaim` 在 WSL 对真实残留清场并幂等复核；
+* 未完成：**真机验收（M10）**。前端浏览器渲染、目标设备 nft 行为、5G 重拨/IPv6/断电矩阵都归 M10；
 * 事务层现在**有运行期调用者**：守护进程主循环（`src/main.rs`）读 UCI、按周期决策、
   调 `Coordinator::submit()`；RPC 的写方法经 `Command` 通道送回同一个循环串行执行
   （`Scheduler` 与事务因此都只有一个所有者，别在 RPC 层另起一套）；
 * RPC 的 `apply` **不接收** UI 传来的配置副本，一律以磁盘上已保存的为准；
   `submit()` 返回 `Receipt` 而非 `Result`，RPC 必须原样回传，不得压成 bool；
-* 端到端验证发生在 **WSL**（真 netlink + nft 1.1.3）：事务八阶段、幂等复核、崩溃后启动回收、
+* 端到端验证发生在 **WSL**（真 netlink + nft 1.1.3）：事务八阶段、幂等回收、崩溃后启动回收、
   优雅关停回收、23 个 RPC 方法请求/响应全部实测通过；**目标设备未测**，M10 收口；
-* 下一步唯一正确落点：**M9 打包**（Makefile + apk + procd + 安装脚本；
-  root/ 与 htdocs/ 的文件已就位，按代码常量同源生成 nftables.d 片段）。
+* 下一步唯一正确落点：**M10 真机验收**（设备 SSH 口令问题需所有者澄清，
+  见 `docs/PROGRESS.md` §8 已知阻塞）。
 
 ## 2. 改了会出事的八条不变式
 
@@ -246,21 +248,25 @@ UCI 文件 `/etc/config/smartmwan`，段类型 `smartmwan`(global) / `wan` / `ga
 
 ## 7. 接手后的正确动作序列
 
-1. 跑 `cargo test --offline --lib`（期望 **378**）+ `./scripts/no-lua-check.sh`（期望 0）确认基线；
+1. 跑 `cargo test --offline --lib`（期望 **378**）+ `cargo test --offline --bins`（期望 **2**）
+   + `./scripts/no-lua-check.sh`（期望 0）确认基线；
    再加 `cargo clippy --offline --all-targets -- -D warnings` 与 `cargo fmt --all -- --check`，两个都必须零；
 2. **M0–M6 已完成**（配置 / 系统 / 健康 / 调度 / 规则 / 事务），`src/transaction.rs` 2212 行 / 21 单测：
    八阶段固定顺序、单事务锁、逆序回滚、last-good 快照、`reclaim()` 残留回收。
    动它之前先读 §2.8。
-3. **M7 已完成**（`src/rpc/mod.rs` 1934 行 / 18 单测 + `src/main.rs` 1415 行）：23 方法 + 统一信封 +
-   `SO_PEERCRED` ACL + 脱敏审计 + tokio 监督循环（探测环 / 调度环 / 域名刷新环 / SIGHUP / SIGTERM）。
+3. **M7 已完成**（`src/rpc/mod.rs` 1934 行 / 18 单测 + `src/main.rs` 1520 行 / 2 bin 单测）：
+   23 方法 + 统一信封 + `SO_PEERCRED` ACL + 脱敏审计 + tokio 监督循环
+   （探测环 / 调度环 / 域名刷新环 / SIGHUP / SIGTERM）+ `--dump-include` / `--reclaim`。
    动它们之前先读 §2.9。**别把 WSL 上的端到端通过当成设备验收** —— 目标设备的 nft 版本、
    接口形态、管理面不失联都要在 M10 用 `FirewallExec::Real` 重跑。
-4. **M8 前端是当前落点**：先 `root/usr/share/rpcd/ucode/smartmwan.uc` 桥与 acl.d JSON
-   （ACL 按方法粒度授权，不用 `ubus: *`），再 7 个 JS 视图与 CSS。
-   页面暴露的每个方法都必须有 RPC 与事务支撑 —— 禁止用假数据填（交付判据明确禁止）。
-   `GameSpec` 契约（`src/system/firewall.rs:146`）已被 `build()` 消费、被规则层产出、
-   被事务层串进端到端单测，**不要为了「装配方便」去改它**；要接的是调用方。
-5. M9 打包、M10 真机，按 `docs/ROADMAP.md` 的 DoD 逐条收口。
+4. **M8/M9 已完成**：ucode 桥 + 方法级 ACL + 7 视图 + CSS；OpenWrt 包 Makefile
+   （自建交叉编译，`CONFIG_ARCH` 带引号要剥）+ 四个 apk 维护脚本
+   （define 名按 `include/package-pack.mk` 的 `BuildPackVariable` 实测，
+   **自造名字会被静默忽略**）+ 同源安装期文件（`--dump-defaults` / `--dump-include`）。
+   真实 SDK 构建已通过；`apk adbdump` 可核对脚本是否真的进了包。
+5. **M10 真机是当前落点**：按 `docs/ROADMAP.md` DoD 与 `docs/TESTING.md` 设备矩阵逐条收口
+   （nft 实测语法、5G 重拨、IPv6 不绕过、管理面不失联、断电重启幂等、浏览器渲染）。
+   设备 SSH 口令问题先找所有者澄清（`docs/PROGRESS.md` §8）。
 
 ## 8. 绝对不要做的事
 

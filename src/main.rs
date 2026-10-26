@@ -88,9 +88,11 @@ struct Cli {
     once: bool,
     dump_nft: bool,
     dump_defaults: bool,
+    dump_include: bool,
     capabilities: bool,
     print_config: bool,
     restore_last_good: bool,
+    reclaim: bool,
     log_level: Option<String>,
     log_file: Option<String>,
 }
@@ -110,9 +112,11 @@ fn parse_args() -> Result<Cli> {
             "--once" => cli.once = true,
             "--dump-nft" => cli.dump_nft = true,
             "--dump-defaults" => cli.dump_defaults = true,
+            "--dump-include" => cli.dump_include = true,
             "--capabilities" => cli.capabilities = true,
             "--print-config" => cli.print_config = true,
             "--restore-last-good" => cli.restore_last_good = true,
+            "--reclaim" => cli.reclaim = true,
             "--log-level" => cli.log_level = args.next(),
             "--log-file" => cli.log_file = args.next(),
             "-h" | "--help" => {
@@ -148,9 +152,11 @@ smartmwand — 多 WAN 智能选路守护进程
   --once                 跑一轮「探测 + 决策 + 提交」后退出
   --dump-nft             打印将为当前配置生成的 nft 程序（只读，桶图为空）
   --dump-defaults        打印默认配置的 UCI 文本
+  --dump-include         打印 /etc/nftables.d/smartmwan.nft 占位片段（与代码同源，打包用）
   --capabilities         打印设备 nft 能力探测结果
   --print-config         打印规范化后的 UCI 文本
   --restore-last-good    把 last-good 快照写回配置文件（只写盘，不下发）
+  --reclaim              一次性回收本插件自己的全部内核对象（卸载/排障用）
   --log-level LEVEL      trace/debug/info/warn/error（覆盖配置）
   --log-file PATH        日志文件（覆盖配置）
   -h, --help             本帮助
@@ -193,7 +199,23 @@ async fn async_main(cli: Cli) -> Result<i32> {
         print!("{}", ConfigStore::defaults_uci_text());
         return Ok(0);
     }
+    // nftables.d 安装期占位片段必须与代码同源：打包时由本入口生成，
+    // 不允许仓库里出现手写的第二份（docs/HANDOVER.md §3）。
+    if cli.dump_include {
+        print!("{}", firewall::include_file_text());
+        return Ok(0);
+    }
     let cfg_path = cli.config.clone().unwrap_or_else(default_config_path);
+    // `--reclaim` 必须排在配置加载之前：它是卸载/排障的兜底清场命令，
+    // 而「配置坏掉」恰恰是最需要清场的场景之一。配置文件读不到时按默认参数回收
+    // —— 所有权判定只用常量（优先级带 1000-1023、表号 101-124、OUR_RTPROT、
+    // `inet smw` 表名），与用户配置无关，配置仅用于定位 nft 临时目录。
+    if cli.reclaim {
+        let cfg = load_config_or_default(&cfg_path);
+        // 只删本插件自己的对象，幂等；守护进程不在时也能跑
+        // （不 bind socket、不进主循环）。
+        return Ok(cmd_reclaim(&cfg_path, &cfg).await);
+    }
     let store = ConfigStore::load(&cfg_path)?;
     let cfg = store.config.clone();
     init_logging(&cli, &cfg);
@@ -220,6 +242,22 @@ async fn async_main(cli: Cli) -> Result<i32> {
         return daemon.run_once().await;
     }
     daemon.run().await
+}
+
+/// 回收命令专用的容错加载：配置读不到就按默认参数继续。
+///
+/// 兜底清场不能被坏配置挡住 —— 卸载时配置恰好损坏/被删，正是最需要
+/// 清场的场景。所有权判定只用常量（优先级带 1000-1023、表号 101-124、
+/// `OUR_RTPROT`、`inet smw` 表名），与用户配置无关；配置仅用来定位
+/// nft 临时目录，取默认值不影响回收的正确性。
+fn load_config_or_default(path: &Path) -> Config {
+    match ConfigStore::load(path) {
+        Ok(s) => s.config,
+        Err(e) => {
+            println!("[告警] 配置不可用（{e}），按默认参数回收");
+            Config::default()
+        }
+    }
 }
 
 /// 日志初始化：CLI 覆盖优先，其次配置里的 `log_level` / `log_file`。
@@ -423,6 +461,49 @@ fn cmd_restore_last_good(cfg_path: &Path, cfg: &Config) -> i32 {
         Ok(None) => {
             println!("没有 last-good 快照（从未成功应用过）。");
             1
+        }
+        Err(e) => {
+            println!("[失败] {e}");
+            1
+        }
+    }
+}
+
+/// `--reclaim`：一次性回收本插件自己的全部内核对象（卸载/排障用）。
+///
+/// 与守护进程的关停回收同一实现（`Coordinator::reclaim()`）：按优先级带、
+/// 表号区间、`OUR_RTPROT`、`NS` 表名判定所有权，**只删自己的**，别人的对象
+/// 保留并逐条报告。幂等 —— 没有残留时也返回成功。
+async fn cmd_reclaim(cfg_path: &Path, cfg: &Config) -> i32 {
+    let state_dir = PathBuf::from(&cfg.global.state_dir);
+    let handle = match system::open_netlink() {
+        Ok(h) => h,
+        Err(e) => {
+            println!("[失败] 打不开 netlink（需要 root）：{e}");
+            return 1;
+        }
+    };
+    let (plane, _nft) = build_plane(cfg_path, &state_dir, handle).await;
+    let coord = Coordinator::new(plane);
+    match coord.reclaim().await {
+        Ok(rep) => {
+            println!(
+                "回收完成：ip rule {} 条、路由 {} 条、nft 表 {}",
+                rep.rules_removed,
+                rep.routes_removed,
+                if rep.nft_dropped {
+                    "已删"
+                } else {
+                    "未处理"
+                }
+            );
+            for f in &rep.foreign {
+                println!("保留非本插件对象：{f}");
+            }
+            for n in &rep.notes {
+                println!("说明：{n}");
+            }
+            0
         }
         Err(e) => {
             println!("[失败] {e}");
@@ -1411,5 +1492,29 @@ async fn dns_loop(st: Arc<AppState>, nft: Option<Arc<Nft>>, mut shutdown: watch:
                 &[],
             );
         }
+    }
+}
+
+// ==================== 单元测试 ====================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reclaim_load_falls_back_to_defaults_when_config_is_broken() {
+        // 卸载/排障的兜底清场不能被坏配置挡住：目录路径会让读文件报
+        // 「Is a directory」（非 NotFound），必须回落到默认配置而不是失败。
+        let cfg = load_config_or_default(Path::new("/tmp"));
+        assert_eq!(cfg, Config::default());
+        // 回落值必须仍是合法配置：桶数等常量不随用户配置改变，回收只依赖它们。
+        assert_eq!(cfg.global.buckets, Config::default().global.buckets);
+    }
+
+    #[test]
+    fn reclaim_load_accepts_missing_config() {
+        // 首次安装前的清理：文件不存在时 load() 本身就给默认配置。
+        let cfg = load_config_or_default(Path::new("/nonexistent/smartmwan/config"));
+        assert_eq!(cfg, Config::default());
     }
 }

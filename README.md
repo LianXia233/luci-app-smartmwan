@@ -23,42 +23,48 @@ src/                    Rust 后端（1 个库 + 1 个守护进程二进制）
   system/               netlink、策略路由、接口拓扑、nftables 生成、conntrack、exec
   health/               探测（ICMP/TCP/UDP/DNS）、滑动窗口指标、线路状态机
   scheduler/            负载均衡桶分配、主备切换、滞回去抖、低延迟择优
-  rules/                流量分类（游戏白名单 / 客户端匹配 / 域名动态集合）  ← 完成，由事务层调用
+  rules/                流量分类（游戏白名单 / 客户端匹配 / 域名动态集合）
   transaction.rs        校验→下发→回读→回滚 的单事务层                    ← 代码完成 / 待真机
-  rpc/                  Unix socket JSON RPC + ACL + 审计日志             ← 未实现
-  main.rs               守护进程入口与 tokio 监督循环                      ← 未实现
-root/                   打包进 ipk/apk 的运行时文件（UCI 默认值、procd、nftables.d、rpcd ucode/acl、menu.d）
+  rpc/                  Unix socket JSON RPC + ACL + 审计日志
+  main.rs               守护进程入口与 tokio 监督循环
+Makefile                OpenWrt 包（apk 时代；自建交叉编译 + 同源安装期文件 + 维护脚本）
+root/                   打包进 apk 的运行时文件（UCI 快照、procd、nftables.d、rpcd ucode/acl、menu.d）
 htdocs/                 LuCI 前端资源（view JS + css）
 scripts/                构建与检查脚本（含 Lua 禁用扫描）
 docs/                   要求对照 / 架构 / 配置 / 安全 / 测试 / 路线图 / 进度 / 交接
-tests/                  跨层集成测试
+tests/                  跨层集成测试（未开始）
 ```
 
 ## 当前状态（2026-10-26）
 
-后端七层（config / system / health / scheduler / rules / transaction / **rpc**）+
-**守护进程入口**已实现，`cargo test --offline --lib` = **378 passed / 0 failed**。
+后端七层（config / system / health / scheduler / rules / transaction / rpc）+
+**守护进程入口** + **前端** + **打包**已实现，
+`cargo test --offline --lib` = **378 passed / 0 failed**（另有 2 条 bin 测试）。
 RPC 层提供 23 个方法（Unix socket + JSON 统一信封 + `SO_PEERCRED` ACL + 脱敏审计）；
 守护进程 `smartmwand` 常驻运行：探测环、调度环（`Scheduler::decide` → `Coordinator::submit`，
 桶图单独变化走 `replace rule` 热替换）、域名集合刷新环、SIGHUP 重载、SIGTERM 优雅关停
 （关停会撤销自己的全部内核对象）。CLI 支持 `--check / --once / --dump-nft /
---dump-defaults / --capabilities / --print-config / --restore-last-good`。
+--dump-defaults / --dump-include / --capabilities / --print-config / --restore-last-good / --reclaim`。
 
 端到端验证在 **WSL**（真 netlink + 真 nft 1.1.3）完成：事务八阶段、幂等复核、
-崩溃（kill -9）后启动回收、优雅关停回收、23 个 RPC 方法请求/响应全部实测通过，
-并借此修掉七处「单测全绿、真机必爆」的缺陷（`docs/PROGRESS.md` §6.13–6.19）。
+崩溃（kill -9）后启动回收、优雅关停回收、23 个 RPC 方法请求/响应、`--reclaim`
+对真实残留的清场与幂等复核全部实测通过，并借此修掉七处「单测全绿、真机必爆」的
+缺陷（`docs/PROGRESS.md` §6.13–6.19）。
 rpcd ucode 桥同样在 WSL 经 ucode CLI 对真实守护进程往返验证（含错误信封透传）；
 **浏览器渲染未在真实 LuCI 环境验证**。**目标设备尚未验收**（M10）：设备上的 nft
 版本、5G 重拨、IPv6、管理面不失联要以设备实测为准。
 
-未完成：**打包（M9）、真机验收（M10）**。前端（M8）已落地：rpcd ucode 桥
-（方法级 ACL）+ menu.d + 7 个 JS 视图 + CSS，桥接已端到端验证；还缺安装包。
+打包（M9）已完成：真实 OpenWrt/ImmortalWrt 25.12 SDK（aarch64 musl）构建出
+`.apk` 并逐项校验（四个维护脚本、同源安装期文件、conffiles、aarch64 静态二进制），
+校验方法见 [docs/TESTING.md](docs/TESTING.md) §5。
+未完成：**真机验收（M10）**。
 逐条完成度见 [docs/PROGRESS.md](docs/PROGRESS.md)，交付判据见 [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)。
 
 ## 开发环境命令
 
 ```sh
 cargo test --offline --lib                           # 单元测试（378 条，无需网络/root/路由器）
+cargo test --offline --bins                          # bin 测试（2 条：--reclaim 配置回落）
 cargo clippy --offline --all-targets -- -D warnings  # Lint：必须 0 警告
 cargo fmt --all -- --check                           # 风格：必须无差异
 cargo build --offline --release                      # 构建 smartmwand
@@ -91,4 +97,4 @@ cargo build --offline --release                      # 构建 smartmwand
 
 ## 许可
 
-GPL-2.0-or-later（见 [LICENSE](LICENSE)，SPDX 标识符与 Cargo.toml/Makefile 一致）。
+GPL-3.0-or-later（见 [LICENSE](LICENSE)，SPDX 标识符与 Cargo.toml/Makefile 一致）。
