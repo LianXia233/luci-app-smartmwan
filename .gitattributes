@@ -1,0 +1,32 @@
+# 行尾策略：仓库内一律 LF，签出到任何平台也都是 LF。
+# 没有这份文件时，Windows 上 core.autocrlf 默认开启会把文本签出成 CRLF，
+# 造成「整仓文件都显示已修改」的假改动，也让 diff 无法阅读。
+* text=auto eol=lf
+
+# 明确的二进制类型：text=auto 的探测对它们一律不生效，
+# 在这里显式声明，避免未来新增同类文件时被误判为文本。
+*.png binary
+*.gif binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.webp binary
+*.bmp binary
+*.pdf binary
+*.gz binary
+*.xz binary
+*.zst binary
+*.zip binary
+*.tar binary
+*.apk binary
+*.ipk binary
+*.o binary
+*.a binary
+*.so binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+
+# 脚本与配置保持可执行位语义由 git 模式位记录；
+# 这里只锁行尾，不触碰 mode（packaging 阶段加 shell 脚本时同理）。
