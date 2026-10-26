@@ -23,7 +23,7 @@ return view.extend({
 	},
 
 	render: function(data) {
-		var smw = new smartmwan();
+		var smw = smartmwan;   /* LuCI require 返回单例实例，不可再 new */;
 		if (data == null || data.__error != null)
 			return E('div', { 'id': ROOT, 'class': 'smw-state smw-state-error alert-message warning' }, [
 				E('strong', {}, [ 'RPC 失败：' ]),
@@ -84,7 +84,7 @@ return view.extend({
 				var box = document.getElementById('smw-traffic-refresh');
 				if (box == null)
 					return;
-				box.textContent = '更新于 ' + new smartmwan().time(Date.now());
+				box.textContent = '更新于 ' + smartmwan.time(Date.now());
 			}).catch(function() {});
 		}, 3);
 		root.appendChild(E('div', { 'id': 'smw-traffic-refresh', 'class': 'smw-muted' },

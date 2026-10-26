@@ -17,7 +17,7 @@ return view.extend({
 	},
 
 	render: function(data) {
-		var smw = new smartmwan();
+		var smw = smartmwan;   /* LuCI require 返回单例实例，不可再 new */;
 		var parsed = data && data.__error == null ? smw.parse(data) : null;
 
 		if (parsed == null || parsed.state == 'error')

@@ -152,7 +152,7 @@ smartmwand — 多 WAN 智能选路守护进程
   --once                 跑一轮「探测 + 决策 + 提交」后退出
   --dump-nft             打印将为当前配置生成的 nft 程序（只读，桶图为空）
   --dump-defaults        打印默认配置的 UCI 文本
-  --dump-include         打印 /etc/nftables.d/smartmwan.nft 占位片段（与代码同源，打包用）
+  --dump-include         打印 fw4 自动片段占位（ruleset-post/smartmwan.nft，与代码同源，打包用）
   --capabilities         打印设备 nft 能力探测结果
   --print-config         打印规范化后的 UCI 文本
   --restore-last-good    把 last-good 快照写回配置文件（只写盘，不下发）
@@ -199,7 +199,7 @@ async fn async_main(cli: Cli) -> Result<i32> {
         print!("{}", ConfigStore::defaults_uci_text());
         return Ok(0);
     }
-    // nftables.d 安装期占位片段必须与代码同源：打包时由本入口生成，
+    // fw4 自动片段（ruleset-post）安装期占位必须与代码同源：打包时由本入口生成，
     // 不允许仓库里出现手写的第二份（docs/HANDOVER.md §3）。
     if cli.dump_include {
         print!("{}", firewall::include_file_text());

@@ -26,7 +26,7 @@ return view.extend({
 	},
 
 	render: function(data) {
-		var smw = new smartmwan();
+		var smw = smartmwan;   /* LuCI require 返回单例实例，不可再 new */;
 		if (data == null || data.__error != null)
 			return E('div', { 'id': ROOT, 'class': 'smw-state smw-state-error alert-message warning' }, [
 				E('strong', {}, [ 'RPC 失败：' ]),
@@ -100,7 +100,7 @@ return view.extend({
 			root.appendChild(E('h3', {}, [ '最近一次应用' ]));
 			root.appendChild(E('p', {}, [
 				'事务 ', E('code', {}, [ cfg.data.applied.transaction ]),
-				'，应用于 ', new smartmwan().time(cfg.data.applied.applied_at_ms)
+				'，应用于 ', smartmwan.time(cfg.data.applied.applied_at_ms)
 			]));
 		}
 

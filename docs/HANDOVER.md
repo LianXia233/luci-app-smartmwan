@@ -6,20 +6,27 @@
 ## 1. 三十秒版
 
 * 这是 OpenWrt/ImmortalWrt **25.12+** 的多 WAN 智能选路插件，**后端 Rust、前端 LuCI JS + ucode，全项目零 Lua**；
-* 已完成：配置层、系统交互层、健康层、调度层、规则层、事务层、**RPC 层、守护进程入口、
-  前端（M8）、打包（M9）**（378 lib + 2 bin 单测全绿，clippy/fmt 双零）；
-* M9 产物已在真实 SDK（aarch64 musl）构建成功并解包核对：四个维护脚本、同源安装期文件、
-  conffiles、aarch64 静态二进制全部就位；`--reclaim` 在 WSL 对真实残留清场并幂等复核；
-* 未完成：**真机验收（M10）**。前端浏览器渲染、目标设备 nft 行为、5G 重拨/IPv6/断电矩阵都归 M10；
+* 已完成：全部代码（后端七层 + 守护进程 + 前端 + 打包）+ **M10 真机验收第一轮**
+  （382 lib + 2 bin 单测全绿，clippy/fmt 双零）；
+* 真机（ImmortalWrt SNAPSHOT / mediatek-filogic aarch64 / nft 1.1.7）：安装/升级/卸载、
+  数据面、健康探测状态机、幂等回收、管理面不失联全部实测通过；抓出**六处真机必爆缺陷**
+  全部修复（`docs/PROGRESS.md` §6.20–6.25）—— 每一条在单测/WSL 里都是绿的；
+* 遗留：双 WAN 均衡/主备切换与 5G 重拨（设备第二线路 eth0 未接上游）、断电重启幂等、
+  浏览器侧渲染人工确认；`tests/` 集成测试仍未写；
 * 事务层现在**有运行期调用者**：守护进程主循环（`src/main.rs`）读 UCI、按周期决策、
   调 `Coordinator::submit()`；RPC 的写方法经 `Command` 通道送回同一个循环串行执行
   （`Scheduler` 与事务因此都只有一个所有者，别在 RPC 层另起一套）；
 * RPC 的 `apply` **不接收** UI 传来的配置副本，一律以磁盘上已保存的为准；
   `submit()` 返回 `Receipt` 而非 `Result`，RPC 必须原样回传，不得压成 bool；
-* 端到端验证发生在 **WSL**（真 netlink + nft 1.1.3）：事务八阶段、幂等回收、崩溃后启动回收、
-  优雅关停回收、23 个 RPC 方法请求/响应全部实测通过；**目标设备未测**，M10 收口；
-* 下一步唯一正确落点：**M10 真机验收**（设备 SSH 口令问题需所有者澄清，
-  见 `docs/PROGRESS.md` §8 已知阻塞）。
+* 下一步：第二线路接入后验证均衡/主备/5G 重拨；`tests/` 集成测试；浏览器人工确认。
+
+### 前端必读（真机踩坑后新增）
+
+* **LuCI 的 `'require X'` 返回模块类的单例实例，不是类本身**（luci.js 加载器
+  `new _class()` 后缓存实例）—— 共享模块 smartmwan.js 在视图里必须直接
+  `smartmwan.parse(...)`，**绝不能 `new smartmwan()`**（真机报
+  "smartmwan is not a constructor"）。新增视图同理；
+* 菜单位置：`admin/network/smartmwan`（仓库所有者指定，放在「网络」菜单下）。
 
 ## 2. 改了会出事的八条不变式
 
@@ -264,9 +271,9 @@ UCI 文件 `/etc/config/smartmwan`，段类型 `smartmwan`(global) / `wan` / `ga
    （define 名按 `include/package-pack.mk` 的 `BuildPackVariable` 实测，
    **自造名字会被静默忽略**）+ 同源安装期文件（`--dump-defaults` / `--dump-include`）。
    真实 SDK 构建已通过；`apk adbdump` 可核对脚本是否真的进了包。
-5. **M10 真机是当前落点**：按 `docs/ROADMAP.md` DoD 与 `docs/TESTING.md` 设备矩阵逐条收口
-   （nft 实测语法、5G 重拨、IPv6 不绕过、管理面不失联、断电重启幂等、浏览器渲染）。
-   设备 SSH 口令问题先找所有者澄清（`docs/PROGRESS.md` §8）。
+5. **M10 剩余项是当前落点**：双 WAN 均衡/主备/5G 重拨（第二线路接入后）、断电重启幂等、
+   浏览器侧人工确认；`tests/` 集成测试。真机第一轮结论与六处缺陷修复见
+   `docs/PROGRESS.md` §6.20–6.25 与 `docs/TESTING.md` §7。
 
 ## 8. 绝对不要做的事
 

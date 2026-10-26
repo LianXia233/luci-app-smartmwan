@@ -57,7 +57,18 @@ rpcd ucode 桥同样在 WSL 经 ucode CLI 对真实守护进程往返验证（�
 打包（M9）已完成：真实 OpenWrt/ImmortalWrt 25.12 SDK（aarch64 musl）构建出
 `.apk` 并逐项校验（四个维护脚本、同源安装期文件、conffiles、aarch64 静态二进制），
 校验方法见 [docs/TESTING.md](docs/TESTING.md) §5。
-未完成：**真机验收（M10）**。
+**真机验收（M10）第一轮已完成**：ImmortalWrt SNAPSHOT 真机（mediatek/filogic aarch64，
+nft 1.1.7）安装/升级/卸载、数据面下发、健康探测状态机、幂等回收、管理面不失联全部
+实测通过；抓出六处「测试全绿、真机必坏」缺陷并全部修复（`docs/PROGRESS.md` §6.20–6.25）。
+剩余：双 WAN 均衡/主备切换（需第二线路接入）、断电重启幂等、浏览器侧人工确认。
+
+**部署要求**：设备内核需放通 ping socket，否则健康探测不可用（会诚实告警而不是伪造状态）：
+
+```sh
+sysctl -w net.ipv4.ping_group_range='0 2147483647'
+echo 'net.ipv4.ping_group_range=0 2147483647' >> /etc/sysctl.conf
+```
+
 逐条完成度见 [docs/PROGRESS.md](docs/PROGRESS.md)，交付判据见 [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)。
 
 ## 开发环境命令

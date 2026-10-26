@@ -23,7 +23,7 @@ return view.extend({
 	},
 
 	render: function(data) {
-		var smw = new smartmwan();
+		var smw = smartmwan;   /* LuCI require 返回单例实例，不可再 new */;
 		if (data == null || data.__error != null)
 			return E('div', { 'id': ROOT, 'class': 'smw-state smw-state-error alert-message warning' }, [
 				E('strong', {}, [ 'RPC 失败：' ]),

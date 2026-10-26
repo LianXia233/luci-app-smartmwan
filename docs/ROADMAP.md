@@ -204,15 +204,25 @@ DoD：
       同源文件反解比对一致、PKGINFO 许可证 `GPL-3.0-or-later`；
       可复现性说明见 `docs/TESTING.md` §5。
 
-## M10 —— 自动化与真机验收（未开始）
+## M10 —— 自动化与真机验收（第一轮已完成，2026-10-26；剩余项标注）
 
 DoD：
 
-* [ ] CI/脚本：`cargo test`、`no-lua-check.sh`、`--check`、`--dump-nft` 快照比对、apk 构建；
-* [ ] `tests/*.rs` 集成测试（配置→决策→nft 文本 的黄金样本回归）；
-* [ ] 真机矩阵：x86-64 与 aarch64 各一台，至少验证 nft 语法、5G 重拨后网关变化、
-      IPv6 不绕过、管理平面不失联、断电重启后规则不重复；
-* [ ] 最终报告：状态/改动文件/测试命令/结果/遗留问题，全部如实。
+* [x] CI/脚本：`cargo test`、`no-lua-check.sh`、`--check`、`--dump-nft` 快照比对、apk 构建
+      （apk 构建与全部门禁已真实执行；GitHub Actions 等在线 CI 未做，本地脚本齐备）；
+* [ ] `tests/*.rs` 集成测试（配置→决策→nft 文本 的黄金样本回归）——仍未写；
+* [x] 真机验收（ImmortalWrt SNAPSHOT / mediatek-filogic aarch64 / 内核 6.18.55 / nft 1.1.7 /
+      apk 3.0.5，与构建 SDK 同源）：安装/升级/卸载、enabled=0 零触碰、nft 能力探测
+      （6/8 项可用，域名规则诚实降级）、ubus 23 方法往返、LuCI `admin/network/smartmwan`
+      7 页 200、enabled=1 数据面（ip rule 1000 / 表 101 / `inet smw` 集合）、状态机全链路
+      （unknown→failed→recovering→healthy）、幂等复核、停用回收清零、管理面不失联；
+      抓出六处「测试全绿、真机必坏」缺陷并全部修复（`docs/PROGRESS.md` §6.20–6.25）；
+* [ ] 剩余真机项：双 WAN 均衡/主备切换与 5G 重拨（需第二线路接入 eth0）、
+      断电重启幂等（需用户断电重启后复核 ip rule 不重复）、
+      浏览器侧渲染人工确认（JS 已修复一轮「require 返回单例实例被当构造函数」，
+      待所有者刷新页面确认）；
+* [x] 最终报告：状态/改动文件/测试命令/结果/遗留问题，全部如实
+      （`docs/TESTING.md` §6/§7、`CHANGELOG.md` M10 条目）。
 
 ## 明确不做的事
 

@@ -31,7 +31,7 @@ return view.extend({
 		if (data == null || data.__error != null)
 			return this.errorBox(data && data.__error);
 
-		var smw = new smartmwan();
+		var smw = smartmwan;   /* LuCI require 返回单例实例，不可再 new */;
 		var st = smw.parse(data.status);
 		var root = E('div', { 'id': ROOT, 'class': 'smw-panel' });
 
@@ -137,9 +137,9 @@ return view.extend({
 				var box = document.getElementById('smw-status-body');
 				if (box == null)
 					return;
-				var p = new smartmwan().parse(env);
+				var p = smartmwan.parse(env);
 				box.textContent = p.state == 'ready'
-					? ('更新于 ' + new smartmwan().time(Date.now()) + '：' + p.data.reason)
+					? ('更新于 ' + smartmwan.time(Date.now()) + '：' + p.data.reason)
 					: ('刷新失败：' + (p.error && p.error.message));
 			}).catch(function() {});
 		}, 5);

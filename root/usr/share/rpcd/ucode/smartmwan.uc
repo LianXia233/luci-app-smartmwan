@@ -175,7 +175,10 @@ function call_daemon(req, method) {
 
 const no_args = {};
 const line_arg = { wan: "" };
-const log_args = { level: "", limit: 16 };
+// 注意：rpcd-mod-ucode 把整数 typehint 的**值**当位宽（8→INT8、16→INT16、64→INT64、
+// 其余→INT32），不是默认值 —— 声明 limit:16 会让 INT32 实参被拒（真机实测踩坑）。
+// 数字参数一律写 0（→INT32），默认值由守护进程侧解析兜底。
+const log_args = { level: "", limit: 0 };
 const config_arg = { config: {} };
 const force_args = { wan: "", confirm: true };
 const maint_args = { wan: "", on: true };
