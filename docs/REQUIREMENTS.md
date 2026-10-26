@@ -1,0 +1,165 @@
+# 项目要求与验收矩阵
+
+本文件是任务书的**可核查版本**：把 15 节要求拆成条目，每条给出「实现位置」和「如何验收」。
+状态图例：
+
+* `完成` —— 代码存在且有单测覆盖；
+* `部分` —— 主要逻辑存在，但有明确子项缺失（在备注里写清缺什么）；
+* `未开始` —— 占位或空目录，**不得**在任何对外文档/界面里声称已完成；
+* `需真机` —— 逻辑完成，但最终结论只能在路由器上取得（沙箱内没有 `nft`、没有 root）。
+
+## 0. 硬性约束（优先级高于任何功能）
+
+| # | 要求 | 实现位置 | 验收方式 | 状态 |
+|---|---|---|---|---|
+| 0.1 | 全项目零 Lua：不得有 controller/model/view/RPC 垫片 `.lua` | 结构约定 + `scripts/no-lua-check.sh` | `./scripts/no-lua-check.sh`；脚本从三个维度扫描（文件、`require("luci.*")` 内容、Makefile 依赖） | 完成（扫描器已实测：干净树退出 0，注入 `*.lua` 或 `require("luci.dispatcher")` 后退出 1） |
+| 0.2 | 扫描器不得误报工具链/SDK 自带的 Lua | `scripts/no-lua-check.sh` 的 `skip` 白名单（`target/ feeds/ openwrt/ sdk* …`）+ 排除自身 | 在含有 `feeds/`、`openwrt/` 的工作树里运行仍为 0 | 完成 |
+| 0.3 | 后端必须是 Rust 常驻服务，模块化而非单文件 | `src/{config,system,health,scheduler,rules,transaction,rpc}` | `ls src/*/*.rs`；单文件最大 1827 行，无「上帝文件」 | 完成 |
+| 0.4 | 使用稳定工具链 + 成熟依赖，不堆实验 crate | `Cargo.toml`：仅 tokio / libc / serde / serde_json / thiserror，逐条注释「为什么不引入 ubus/rtnetlink/conntrack/libuci FFI」 | `cargo tree -d`；`cargo build --offline` 通过 | 完成 |
+| 0.5 | 所有代码注释用中文 | 全 `src/**` | `grep -rL` 抽查；Review 时人工确认 | 完成 |
+| 0.6 | 不考虑低端嵌入式优化（现代路由 CPU 足够）→ 使用真实异步运行时 | tokio 多线程 runtime，`src/health/probe.rs`、`src/system/netlink.rs` | `cargo test`；无自旋轮询、无 busy loop | 完成 |
+
+## 1. 前端（LuCI 原生 JavaScript + ucode）
+
+| # | 要求 | 状态 | 备注 |
+|---|---|---|---|
+| 1.1 | 7 个标签页：运行总览 / 线路管理 / 负载均衡 / 主备切换 / 游戏低延迟 / 连接与流量 / 系统设置 | 未开始 | `htdocs/luci-static/resources/view/smartmwan/` 目前为空 |
+| 1.2 | CSS Grid + Flexbox，样式作用域隔离 | 未开始 | 计划 `htdocs/luci-static/resources/smartmwan/smartmwan.css`，根类 `.smw-` 前缀 |
+| 1.3 | 诚实的空/加载/无权限/RPC 失败状态 | 未开始 | 后端已为每条状态准备好解释文本（见 4.6、`Outcome::explain()`），前端只需如实渲染 |
+| 1.4 | 键盘可达、无装饰性动画 | 未开始 | — |
+| 1.5 | RPC 版本握手，版本不符拒绝渲染 | 部分 | `RPC_PROTOCOL=1` 常量已定（`src/lib.rs:31`），RPC 层未实现 |
+
+## 2. 数据平面（策略路由 + nftables）
+
+| # | 要求 | 实现位置 | 状态 |
+|---|---|---|---|
+| 2.1 | 每条线路独立路由表（`TABLE_BASE + slot`，恒 < 253） | `src/lib.rs::marks` | 完成（单测 `mark_fields_roundtrip`） |
+| 2.2 | `ip rule` 只用槽位掩码，规则数恒等于启用线路数 | `marks::RULE_MASK`、`src/system/route.rs::plan` | 完成（单测 `bucket_and_gen_changes_do_not_affect_table`） |
+| 2.3 | 优先级/掩码冲突审计，不破坏用户既有规则 | `route.rs::audit_conflicts`、`is_our_priority`、`RULE_PRIO_BASE/SPAN` | 完成；真机上需与用户手写规则复核（需真机） |
+| 2.4 | ct mark → pktmark 继承，且**不介入他人标记** | `src/system/firewall.rs`（区间匹配 `ct mark 0x05000000-0x05ffffff`） | 完成（文本生成 + 单测）；nft 语法需真机 |
+| 2.5 | 已建立连接出口保持（sticky）、NAT/回程一致 | `firewall.rs` 的 inherit 规则 + `global.conn_sticky` | 部分：逻辑与程序生成完成，未做真机连接级验证 |
+| 2.6 | IPv4/IPv6 分离处理，可单独关闭 IPv6 接管 | `netlink::Family`、`route.rs::plan`、`enable_ipv6` | 完成 |
+| 2.7 | 只清理自己的对象，绝不 flush 整表 | `NS="smw"` 前缀、`delete table inet smw` 单表重建 | 完成（代码层面）；需真机 |
+| 2.8 | 真实核对 `/etc/nftables.d/` 机制 | `firewall.rs::include_file_text`，配合 UCI `config include` / `type 'nftables'` / `position` | 完成（依据 firewall4 ucode 源码）；需真机 |
+| 2.9 | 不做高频全量重建 | 低频：整表单批原子重建；高频桶重排：仅 `replace rule ... handle N`（`Nft::replace_rule`） | 完成（设计上）；需真机确认 handle 稳定性 |
+| 2.10 | 校验后下发 + 下发后回读 + 失败回滚 | `route::Applier::{apply,verify,rollback}`、`Undo` | 完成（含单测）；`transaction` 编排层未开始 |
+
+## 3. 工作模式与算法
+
+| # | 要求 | 实现位置 | 状态 |
+|---|---|---|---|
+| 3.1 | 两种全局模式：负载均衡 / 主备（多级备份） | `schema::Mode`、`scheduler::failover` | 完成 |
+| 3.2 | 自动/手动回切：延迟 + 连续成功 + 预热 + 防抖 | `failback_delay_ms`、`failback_success_threshold`、`warmup_ms`、`hysteresis::Debounce` | 完成 |
+| 3.3 | 强制切换、维护模式 | `failover::force/release_forced`、`WanConfig.maintenance` | 完成 |
+| 3.4 | 备份线路默认不承载普通流量，除非显式开启游戏例外 | `GamePolicy::{Follow,Exception}` + `State::carries_normal_traffic` | 完成 |
+| 3.5 | 六种哈希/两类动态/加权算法 | `scheduler::balancing`、`schema::Algorithm` | 完成 |
+| 3.6 | 每个算法如实标注能力边界，不过度承诺 | `Algorithm::limitations()`（9 条全非空，单测 `every_algorithm_declares_limitations`） | 完成 |
+| 3.7 | 不支持的选项绝不伪造 | `Algorithm::WeightedEcmp` → `Error::Unsupported`，调度层降级为 `WeightedHash` 并写入 `notes`（「算法降级」） | 完成 |
+
+## 4. 游戏路由与低延迟
+
+| # | 要求 | 实现位置 | 状态 |
+|---|---|---|---|
+| 4.1 | 预置库可维护，**绝不编造服务器 IP/端口** | 计划 `src/rules/games.rs` + `root/usr/share/smartmwan/games/`（空目录） | 未开始（当前无预置数据，`preset` 字段留空） |
+| 4.2 | 自定义 CIDR / 协议 / 端口 / 范围 | `schema::GameRule`、`parse_port_range`（逆序/超范围拒绝） | 完成 |
+| 4.3 | 按 LAN 客户端 IP/MAC 匹配 | `client_ips`/`client_macs` + `validate::valid_mac` | 完成（数据层）；nft 侧 `ether_addr` 集合需真机 |
+| 4.4 | 域名规则 → 动态 nft 集合，并写清 DNS/CDN/DoH/IPv6/过期限制 | 计划 `src/rules/dns_sets.rs` | 未开始（`MAX_SET_ELEMENTS=2048`、`DYNAMIC_SET_SIZE=1024` 已预留） |
+| 4.5 | 规则优先级、启停、冲突检查 | `GameRule.priority`（同值按名称字典序，确定性）、`validate.rs` | 部分：排序与校验完成，跨规则冲突检测在 `rules` 层未开始 |
+| 4.6 | 分线路质量指标 | `health::metrics`（RTT/抖动/丢包/不稳定度/P95，窗口 90 样本，`MIN_SAMPLES=5` 置信门槛） | 完成 |
+| 4.7 | 可配置评分公式与归一化/夹取/滑窗/滞回/最小稳定时间 | `scheduler::latency::{ScoreWeights, ratio, clamp01}`，`min_advantage_permille`、`min_stable_ms` | 完成 |
+| 4.8 | 模式感知（主备时游戏是否例外） | `scheduler::ranking()` 在 `Follow` 时只允许活动线路 | 完成 |
+
+## 5. 健康检测状态机
+
+| # | 要求 | 状态 |
+|---|---|---|
+| 5.1 | `UNKNOWN→HEALTHY→DEGRADED→FAILED→RECOVERING→HEALTHY` | 完成（`health/state.rs`） |
+| 5.2 | 迁移条件可配 | 完成（`HealthConfig` 8 个阈值，线路级覆盖） |
+| 5.3 | 单测覆盖迁移 | 完成（`health` 模块测试 + 时间驱动 `tick()`） |
+| 5.4 | 默认 1000/800/3/5/5000ms，并声明「不适合所有 5G 模组」 | 完成（默认值 + 注释 + 本文件 §9） |
+| 5.5 | 探测不得计为线路失败的类型 | 完成：`Unsupported`/`LocalError` 不改状态；`Reply/Timeout/Unreachable` 才计分 |
+| 5.6 | 探测必须绑定出口设备与源地址 | 完成：`SO_BINDTODEVICE`(25) + 显式 bind + ping socket（无需 `CAP_NET_RAW`） |
+
+## 6. RPC 与配置管理
+
+| # | 要求 | 状态 |
+|---|---|---|
+| 6.1 | ≥19 个方法，见 `docs/ARCHITECTURE.md` 的方法清单 | 未开始（`src/rpc/mod.rs` 占位） |
+| 6.2 | 统一信封 `ok/data/error{code,message}/timestamp` | 部分：`Error::code()` 已定义 12 个稳定错误码；信封未实现 |
+| 6.3 | 严格 ACL、互斥锁、审计日志、读操作无副作用 | 未开始 |
+| 6.4 | UCI `save`/`apply` 分离 | 部分：`config::Store::{save, render, diff}` 完成；RPC 层的分离语义未开始 |
+| 6.5 | 下发前变更摘要 | 完成：`config::diff()` + `route::Diff::summary()` |
+| 6.6 | 迁移、默认值、last-good 保存与恢复 | 完成：`config::migrate()`、`Applied::{store_applied, load_applied, restore_last_good}` |
+
+## 7. 安全清单（11 项，逐项见 `docs/SECURITY.md`）
+
+注入、损坏 UCI、ACL 过宽、并发事务、重启后规则重复、标记/路由不一致、残留规则、
+5G 重拨导致网关变化、IPv6 绕过、探测负载、前端轮询泄漏、管理平面失联 —— 全部有对应机制或已列为待办，状态在 `docs/SECURITY.md` 里逐条给出。
+
+## 8. 构建 / 打包 / 安装
+
+| # | 要求 | 状态 |
+|---|---|---|
+| 8.1 | Makefile（OpenWrt 包）+ Rust 交叉编译 + 架构探测 | 未开始 |
+| 8.2 | 依赖声明、**APK** 产物 | 未开始（25.12 已用 apk 取代 opkg，见 §10） |
+| 8.3 | procd 服务脚本 | 未开始（`root/etc/init.d/` 空） |
+| 8.4 | LuCI menu.d + rpcd acl.d JSON | 未开始（`root/usr/share/...` 空） |
+| 8.5 | UCI 默认配置（**默认关闭**） | 完成（代码层：`defaults_uci_text()`，`enabled=false`，单测 `defaults_are_safe_disabled`）；文件未落地 |
+| 8.6 | nftables 安装片段 | 未开始 |
+| 8.7 | 升级/卸载/回滚脚本，产物校验，可复现性说明 | 未开始 |
+| 8.8 | 绝不覆盖用户网络配置 | 完成（设计上）：本插件只写 `/etc/config/smartmwan` 与 `/etc/nftables.d/smartmwan.nft`，对 `network`/`firewall` 只读 |
+
+## 9. 测试与验收
+
+| # | 要求 | 状态 |
+|---|---|---|
+| 9.1 | 功能测试 + 工程测试 | 部分：276 个 lib 单测全绿；`tests/`（集成）未开始 |
+| 9.2 | 禁 Lua 自动化检查 | 完成 |
+| 9.3 | 10 条交付判据 | 进行中，逐条见 `docs/TESTING.md` §交付判据 |
+| 9.4 | 绝不把模拟数据当实时状态展示 | 设计上保证：未测量首轮会产出显式 note「尚未完成首轮探测…」，`Outcome` 无数据时 `carries_traffic()==false` |
+| 9.5 | 列出未完成特性 | 完成：本文件与 `CHANGELOG.md` 的「已知缺失」段落 |
+
+## 10. 固件与工具链事实（外部依据）
+
+这些事实决定了本项目的结构约束，因此必须带来源（以下为撰写本文时实际检索到的页面，
+链接指向来源页本身；每条描述只写该页摘要能支撑的部分）：
+
+* 从 OpenWrt 25.12 开始包管理器由 opkg 改为 apk（Alpine Package Keeper），默认软件源配置路径
+  由 `/etc/opkg/distfeeds.conf` 改为 `/etc/apk/repositories.d/distfeeds.list`；24.10 及更早仍是 opkg。
+  这直接决定了 8.2 的产物格式必须是 `.apk`，且打包不能再用 opkg 的 control 流程。
+  [Openwrt|镜像站使用帮助|清华大学开源软件镜像站|Tsinghua Open Source Mirror](https://mirrors.tuna.tsinghua.edu.cn/help/openwrt/)
+  [OpenWrt](https://mobile.mirrors.ustc.edu.cn/help/openwrt.html)
+* ImmortalWrt 与上游一致：从 ImmortalWrt 25.12 开始同样由 opkg 改为 apk，路径变化相同。
+  因此本插件的 target 需要同时匹配 `openwrt-25.12` 与 `immortalwrt-25.12`。
+  [ImmortalWrt 软件仓库](https://help.mirrors.cernet.edu.cn/immortalwrt/)
+* 25.12 的其余底层变化包括内核升级至 6.12、Attended Sysupgrade 集成进 LuCI、
+  Wi-Fi 管理脚本用 ucode 替代 shell。
+  [OpenWrt 24.10用户注意：包管理器大换血，25.12升级前必看的几个关键变化](https://post.m.smzdm.com/p/a708zvpg/)
+* 本插件**不得**依赖 `luci-lua-runtime`：LuCI 框架自身的去 Lua 化已在 25.12 一代完成，
+  Lua 运行时是可选的独立包（此条以 `research/luci.md` 里核对过的 `luci-base` 控制文件为准）。
+
+**未能在本环境复核的数值**：具体微版本（如内核 6.12.71/6.12.74、GCC 14.3、glibc 2.41、apk 3.0.2→3.0.5）
+只出现在较早的检索摘要里，且不同服务版本对应不同内核补丁号（例如 25.12.6 的内核区间为 6.12.94→6.12.112）。
+本项目**不把这些具体数值作为构建前提**；真正的构建前提是「apk 格式 + ucode LuCI + firewall4」这三条，
+它们都有可复核来源。交叉编译时按 SDK 实际提供的工具链版本走，不在代码里硬编码。
+
+> 本沙箱对 `raw.githubusercontent.com` 有 TLS 中断，`docs` 里的上游源码引用以本地已核对的 ucode 源码为准。
+
+## 11. 执行顺序（任务书第 15 节）与当前落点
+
+```text
+1 审计仓库/固件/LuCI-ucode        完成（research/luci.md, research/buildsystem.md）
+2 设计配置/RPC/数据面             完成（docs/ARCHITECTURE.md）
+3 Rust 服务 + 健康状态机          完成
+4 策略路由 / nftables / 事务      模块 4a 完成（system/*），4b 事务编排未开始
+5 算法 + 主备切换                 完成
+6 游戏路由                        未开始  ← 当前落点
+7 LuCI 页面                       未开始
+8 CSS                             未开始
+9 打包                            未开始
+10 自动化 + 真机验证              部分（Lua 检查完成；真机未做）
+11 修复 + 最终报告                持续
+```
+
+安全与数据面正确性优先于界面打磨 —— 因此 §2、§5、§7 的「需真机」条目在没有设备时一律标注为未验证，
+不用界面完成度掩盖它们。
