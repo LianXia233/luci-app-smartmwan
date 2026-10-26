@@ -6,8 +6,12 @@
 ## 1. 三十秒版
 
 * 这是 OpenWrt/ImmortalWrt **25.12+** 的多 WAN 智能选路插件，**后端 Rust、前端 LuCI JS + ucode，全项目零 Lua**；
-* 已完成：配置层、系统交互层、健康层、调度层、规则层、**事务层**（350 单测全绿）；
+* 已完成：配置层、系统交互层、健康层、调度层、规则层、**事务层**（353 单测全绿）；
 * 未完成：RPC 层、守护进程入口、前端、打包。**现在装到路由器上不能用**；
+* M7 需要的两个入口本轮已备好，**但都还没有生产调用者**：
+  `firewall::probe_caps(&Nft)`（探测脚本 → `Capabilities`，`--capabilities` 与启动探测用它）与
+  `netlink::HandleOps`（拥有型 `RouteOps`，`Arc::new` 后就是 `Plane::ops`）。
+  下一轮写 `main.rs` 时**必须**从这里接，不要再自己拼 `BlockingOps` 或重造探测逻辑；
 * 规则层的说法变了：它现在**有调用者**（`transaction::Coordinator::build_plan()` →
   `rules::compile()` → `firewall::build()`），端到端从 UCI 段一路断言到最终 nft 文本；
   但**事务层自己也只被单测调用** —— 运行期入口（读 UCI、按周期决策、对外提供 RPC）是 M7 的活，
@@ -207,7 +211,7 @@ UCI 文件 `/etc/config/smartmwan`，段类型 `smartmwan`(global) / `wan` / `ga
 
 ## 7. 接手后的正确动作序列
 
-1. 跑 `cargo test --offline --lib`（期望 **350**）+ `./scripts/no-lua-check.sh`（期望 0）确认基线；
+1. 跑 `cargo test --offline --lib`（期望 **353**）+ `./scripts/no-lua-check.sh`（期望 0）确认基线；
    再加 `cargo clippy --offline --all-targets -- -D warnings` 与 `cargo fmt --all -- --check`，两个都必须零；
 2. **M6 事务层已完成**（`src/transaction.rs`，2193 行 / 21 单测）：八阶段固定顺序、单事务锁、
    逆序回滚、last-good 快照、`reclaim()` 残留回收，规则层已在此接线。

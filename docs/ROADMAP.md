@@ -61,7 +61,7 @@ DoD：
 * [x] 装配层 `scheduler::decide()`：单一所有者持有 `Machine`/`Picker`，未测量首轮显式说明；
 * [x] `Outcome.changed` 由真实桶图比较得出 —— 决策未变即不产生任何数据面写入（这是「不做高频全量重建」
       在应用层的落点）；
-* [x] 276 个 lib 单测（其中 balancing 不变式 17 条）—— 这是 **M4 收口时**的数字，M5 之后 329，M6 之后 350。
+* [x] 276 个 lib 单测（其中 balancing 不变式 17 条）—— 这是 **M4 收口时**的数字，M5 之后 329，M6 之后 350，M7 地基之后 353。
 
 ## M5 —— 规则层（游戏路由）（已完成）
 
@@ -144,9 +144,17 @@ DoD：
 `firewall::build()` 生成了带 `comment` 的保护/绕行规则却没登记进 `Program::tags`（复核误报「多余标签」，
 把正确提交判成失败）；`config::diff()` 漏了 `global.hash_seed`（应用前变更清单少报一项）。
 
-## M7 —— RPC 与守护进程（未开始）← **当前落点**
+## M7 —— RPC 与守护进程（进行中：前置已就位，RPC 与入口未写）← **当前落点**
 
-范围：`src/rpc/{mod,ubus}.rs`、`src/main.rs`
+范围：`src/rpc/mod.rs`、`src/main.rs`（原计划里的 `src/rpc/ubus.rs` **取消**：
+桥接走 rpcd 的 ucode 插件直连 Unix socket，不引入 ubus 客户端，理由见 `docs/ARCHITECTURE.md` §7）
+
+前置（本轮已完成，均有单测）：
+
+* [x] `firewall::probe_caps(&Nft) -> Capabilities`：把 `probe_scripts()` 的 8 条脚本接到
+      `nft -c`，产出能力表 —— 没有它，「按设备实测语法降级」在运行期是空的；
+* [x] `netlink::HandleOps`：拥有型 `RouteOps`，`Arc::new(HandleOps(h))` 即可填进
+      `transaction::Plane::ops` —— 没有它，生产环境根本构造不出 `Plane`。
 
 DoD：
 

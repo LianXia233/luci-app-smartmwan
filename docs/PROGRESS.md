@@ -3,20 +3,25 @@
 > 本文件反映**当前工作树**。任何「已完成」都必须能用下面的命令复核；
 > 不能用命令复核的结论一律写成「待验证」。
 
-最后更新：0.4.0-dev 周期，事务层（M6）收口之后。
+最后更新：0.4.0-dev 周期，M7 的第一块砖（nft 能力探测接上执行路径 + `HandleOps`）落地之后。
 
 ## 1. 一句话状态
 
-后端六层（配置 / 系统交互 / 健康 / 调度 / 规则 / 事务）已完成并有 350 个单元测试全绿；
+后端六层（配置 / 系统交互 / 健康 / 调度 / 规则 / 事务）已完成并有 353 个单元测试全绿；
 **RPC 层、守护进程入口、前端、打包尚未实现，因此本仓库现在不能装到路由器上用。**
 规则层的落点变了：M5 时它的产物只被单测喂进数据面生成器，现在由事务层真正调用
 （`Coordinator::build_plan` → `rules::compile()` → `firewall::build()` → `route::Applier`）。
 但要说清：**事务层目前也只被单测调用**，运行期入口（读 UCI、按周期决策、对外提供 RPC）是 M7 的事。
 
+本轮为 M7 铺了两块必需的地基，都在系统交互层，且都有单测：`firewall::probe_caps()`
+（把 `probe_scripts()` 真正接到 `nft -c` 执行路径，此前这些脚本只被单测引用过）与
+`netlink::HandleOps`（能装进 `Arc<dyn RouteOps>` 的拥有型适配器 —— `Plane::ops` 要的就是它，
+此前只有借用型 `BlockingOps`，生产装配根本没有入口）。
+
 ## 2. 可复核指标
 
 ```sh
-cargo test --offline --lib                          # 期望：350 passed; 0 failed
+cargo test --offline --lib                          # 期望：353 passed; 0 failed
 cargo clippy --offline --all-targets -- -D warnings # 期望：0 警告
 cargo fmt --all -- --check                          # 期望：无差异
 cargo build --offline                               # 期望：0 警告
@@ -28,12 +33,12 @@ find src -name '*.rs' -print0 | xargs -0 cat | wc -l # 行数口径，见 §3 �
 
 | 命令 | 结果 |
 |---|---|
-| `cargo test --offline --lib` | `350 passed; 0 failed; 0 ignored` 用时 ~0.30s |
+| `cargo test --offline --lib` | `353 passed; 0 failed; 0 ignored` 用时 ~0.31s |
 | `./scripts/no-lua-check.sh` | 退出码 0；注入 `src/accidentally_controller.lua` 或 `require("luci.dispatcher")` 后退出码 1（已实测两个方向） |
 | `cargo clippy --offline --all-targets -- -D warnings` | **通过，0 警告**。工具链从 1.98.1 升到 1.99.1 后 clippy 组件才可用；首轮暴露 20 条，已按语义逐条处理（见提交 `32b97ad`） |
 | `cargo fmt --all -- --check` | **通过，无差异**（同一提交建立了 rustfmt 基线） |
 | `cargo build --offline` | 0 警告 |
-| `nft -c -f <脚本>` | **不可用**：沙箱没有 `nft` 二进制（uid 0 也没有），且无 netfilter 内核支持 |
+| `nft -c -f <脚本>` | **不可用**：沙箱没有 `nft` 二进制（uid 0 也没有），且无 netfilter 内核支持。本轮 `probe_caps` 的 3 条单测注入 `/bin/true` 与 `/bin/false`，只证明「探测结果 → 能力表」的判定逻辑，**不证明任何语法在本机可用** |
 
 ## 3. 模块完成度
 
@@ -41,7 +46,7 @@ find src -name '*.rs' -print0 | xargs -0 cat | wc -l # 行数口径，见 §3 �
 |---|---:|---:|---|---|
 | `src/lib.rs` | 340 | 6 | 完成 | fwmark 布局、错误类型、`NS` 前缀、版本常量 |
 | `src/config/` | 4028 | 51 | 完成 | UCI 文本解析/序列化、schema v4、迁移、校验、diff、last-good |
-| `src/system/` | 8239 | 109 | 代码完成 / 待真机 | netlink、route、interface、conntrack、exec、firewall |
+| `src/system/` | 8436 | 112 | 代码完成 / 待真机 | netlink、route、interface、conntrack、exec、firewall（本轮 +`probe_caps`、+`HandleOps`） |
 | `src/health/` | 3275 | 49 | 完成 | 四类探测 + 滑窗指标 + 状态机 + Registry |
 | `src/scheduler/` | 3586 | 58 | 完成 | balancing / failover / latency / hysteresis / 装配层 |
 | `src/rules/` | 2270 | 51 | 完成 | matchers / presets / dns_sets / compile；**调用者是 `transaction.rs`** |
@@ -50,7 +55,7 @@ find src -name '*.rs' -print0 | xargs -0 cat | wc -l # 行数口径，见 §3 �
 | `src/rpc/` | 1 | 0 | **占位** | Unix socket JSON RPC + ACL + 审计 |
 | `src/main.rs` | 1 | 0 | **占位** | 守护进程入口与 tokio 监督循环 |
 
-合计 `src/**/*.rs` = 24,472 行。`transaction.rs` 的内部构成：非测试 1,449 行
+合计 `src/**/*.rs` = 24,669 行。`transaction.rs` 的内部构成：非测试 1,449 行
 （`Stage`/`Decision`/`FirewallExec`/`Plan`/`Receipt`/`Coordinator`），
 `#[cfg(test)] mod tests` 起于第 1450 行，测试 744 行。
 
@@ -61,7 +66,7 @@ find src -name '*.rs' -print0 | xargs -0 cat | wc -l # 行数口径，见 §3 �
 按子模块的测试分布（用于判断「哪里测得厚、哪里薄」）：
 
 ```text
-system::firewall   25   config::validate    20   transaction          21
+system::firewall   28   config::validate    20   transaction          21
 system::route      19   health              18   system::interface   17
 scheduler::balancing 17  system              15   system::netlink     15
 rules::dns_sets    15   scheduler::tests    14   rules::tests        14
@@ -72,7 +77,7 @@ system::conntrack   8   health::metrics      8   config::schema       7
 scheduler::hysteresis 6  logging              5   core_tests          6
 ```
 
-合计 350（`config 51 / system 109 / health 49 / scheduler 58 / rules 51 / logging 5 / lib 6 / transaction 21`）。
+合计 353（`config 51 / system 112 / health 49 / scheduler 58 / rules 51 / logging 5 / lib 6 / transaction 21`）。
 复核命令：`cargo test --offline --lib -- --list` 后按模块前缀计数。
 
 ## 4. 目录现状（诚实版）
@@ -114,7 +119,9 @@ Makefile        不存在（打包未开始）
 | `2e8b3d1` | docs | M5 落地后的文档同步（数字全部重测） |
 | `73a5298` | docs | 作者身份统一后的历史重写留痕 + 全部哈希引用更正 |
 | `9abc322` | feat(transaction) | M6 事务层：固定阶段编排 + 逆序回滚 + last-good 快照 + 残留回收（+21 测试 → 350）；顺带修 `firewall::build()` 漏登记 tags、`config::diff()` 漏 `hash_seed` |
-| （本提交） | docs | M6 落地后的文档同步（数字全部重测） |
+| `e46c0c5` | docs | M6 落地后的文档同步（数字全部重测） |
+| `6cfaac1` | feat(firewall,netlink) | M7 前置：`probe_caps()` 把能力探测接上 `nft -c` 执行路径、`HandleOps` 提供生产用 `Arc<dyn RouteOps>`、修 `Nft::version()` 把「跑完了」当「取到了」（+3 测试 → 353） |
+| （本提交） | docs | 本轮（M7 前置）落地后的文档同步 |
 
 > **关于本表的哈希**：2026-10-26 按仓库所有者的明确指示，用 `git filter-branch` 把全部提交的
 > author/committer 统一为 `LianXia233`（见 `docs/HANDOVER.md` §6），并 `--force-with-lease` 强推。
@@ -175,6 +182,13 @@ Makefile        不存在（打包未开始）
     属于用户必须「在应用前看得见」的变更，但变更清单里不出现，UI 的「变更摘要」就会少报一项。
     同类问题只能靠「diff 覆盖 schema 全部字段」的核对来防，M7 做 RPC 的 changeSummary 时按
     `schema.rs` 的字段清单再核一遍。
+12. **`Nft::version()` 把「子进程跑完了」当成「取到版本了」**（本轮修）。旧实现写的是
+    `exec::run(&inv).await.ok().map(...)`：`exec::run` 只在超时/无法启动时返回 `Err`，
+    退出码非 0 是 `Ok(Outcome{status: 1})`，于是 `nft --version` 失败会返回 `Some("")`。
+    UI 上就出现「版本：空」这种既不是「没装」也不是「版本未知」的第三态，`--capabilities`
+    还会把它当成有效版本号写进能力表。现在退出码非 0、构造失败、执行失败、stdout 与 stderr
+    都为空这四种情况一律 `None` 并各记一条 warning；新增
+    `version_only_reports_a_real_string`（注入 `/bin/false` 与 `/bin/echo`）。
 
 另有一条**测试设计的坑**记在这里（不是产品缺陷）：夹具里的「别人装的路由」原本用默认路由
 （`dst = None/0`）放进表 101，结果被本插件自己的表内默认路由按 (表号, 前缀) 覆盖掉
@@ -188,6 +202,9 @@ Makefile        不存在（打包未开始）
    域名集合刷新环、桶轮换热替换走 `Nft::replace_rule` 而非整表重建）+ CLI + 优雅退出。
    事务层的 `Coordinator` 就是为它准备的：`submit()` 返回 `Receipt` 而非 `Result`，
    RPC 层必须把回执原样交给 UI，不能只回一个 bool。
+   **本轮已备好的两块入口**：`firewall::probe_caps(&Nft) -> Capabilities`（`--capabilities`
+   与启动时的能力探测直接调它）与 `netlink::HandleOps(NetlinkHandle)`（实现 `RouteOps`，
+   可以 `Arc::new` 后塞进 `Plane::ops`）。两者都还没有生产调用者，等 `main.rs` 装配时接上。
 2. **M8 前端**：先 ucode 桥与 ACL，再 7 个 JS 视图与 CSS；
 3. **M9 打包**：Makefile + apk + procd + `/etc/nftables.d` 片段（由代码生成，保证同源）+
    `root/usr/share/smartmwan/presets/` 目录与 README（数据文件仍需权威来源）；

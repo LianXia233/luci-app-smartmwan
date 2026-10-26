@@ -129,7 +129,9 @@ RPC 层不得只回一个 bool —— 那等于把「内核现在是什么状态
 * 预置项数据目录：`/usr/share/smartmwan/presets/*.json`，路径常量在
   `src/rules/presets.rs::PRESET_DIR`（**骨架目录必须与它同名**，本轮已把 `games` 改成 `presets`）。
 * fw4 挂接：UCI `config include` + `option type 'nftables'` + `option position`。
-* 运行期：守护进程按能力探测结果写完整程序；桶重排只 `replace rule … handle N`。
+* 运行期：守护进程按能力探测结果写完整程序；探测本身走 `firewall::probe_caps(&Nft)`
+  （对 `probe_scripts()` 的 8 条脚本逐条 `nft -c`，失败项只记 warning 并关闭对应语法，
+  不让整轮探测失败）；桶重排只 `replace rule … handle N`。
 
 ## 6. RPC 设计
 

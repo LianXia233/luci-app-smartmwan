@@ -37,13 +37,16 @@ tests/                  跨层集成测试
 ## 当前状态（2026-10-26）
 
 后端六层（config / system / health / scheduler / rules / transaction）已实现并通过单元测试，
-`cargo test --offline --lib` = **350 passed / 0 failed**。
-RPC 层、守护进程入口、前端与打包尚未完成。事务层是这一轮的落点：
+`cargo test --offline --lib` = **353 passed / 0 failed**。
+RPC 层、守护进程入口、前端与打包尚未完成。事务层已收口：
 一次提交固定走 `校验 → 计划 → nft 试算 → 路由下发/复核 → nft 提交/复核 → 写 last-good 快照`，
-任一步失败按逆序回滚，复核不过就不写快照。规则层从这轮起**有了真正的调用者**
+任一步失败按逆序回滚，复核不过就不写快照。规则层从那时起**有了真正的调用者**
 （`Coordinator::build_plan()` → `rules::compile()` → `firewall::build()`）。
-两条必须说清的限定：**事务层目前只被单测调用**；nft 通道在单测里是替身（`FirewallExec::Sim`），
-**不验证 nft 语法**，真机必须换 `FirewallExec::Real`。
+本轮为 M7 补了两个必需入口：`firewall::probe_caps()`（把能力探测脚本接到 `nft -c` 执行路径，
+产出 `Capabilities`）与 `netlink::HandleOps`（可放进 `Plane::ops` 的拥有型 `RouteOps`）。
+三条限定：**事务层目前只被单测调用**；nft 通道在单测里是替身（`FirewallExec::Sim`），
+**不验证 nft 语法**，真机必须换 `FirewallExec::Real`；`probe_caps` 与 `HandleOps`
+**同样还没有生产调用者**，调用方是尚未编写的 `src/main.rs`。
 逐条完成度见 [docs/PROGRESS.md](docs/PROGRESS.md)，交付判据见 [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)。
 
 **现在这个仓库不能装到路由器上用**——守护进程入口还没实现，
@@ -53,7 +56,7 @@ RPC 层、守护进程入口、前端与打包尚未完成。事务层是这一�
 ## 开发环境命令
 
 ```sh
-cargo test --offline --lib                           # 单元测试（沙箱内可跑，350 条）
+cargo test --offline --lib                           # 单元测试（沙箱内可跑，353 条）
 cargo clippy --offline --all-targets -- -D warnings  # Lint：必须 0 警告
 cargo fmt --all -- --check                           # 风格：必须无差异
 cargo build --offline --release                      # 构建 smartmwand

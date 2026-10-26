@@ -73,6 +73,21 @@
   新增 **21 条单测**，lib 单测 329 → **350**。
   **限定**：nft 通道在单测里是 `FirewallExec::Sim` 替身，它**不验证 nft 语法**，只验证编排顺序；
   真机必须换 `FirewallExec::Real`（`nft -c -f` / `nft -f` / `nft -a list`）后重跑同一批结论（M10）。
+* **M7 的两块地基（系统交互层）**：
+  ① `firewall::probe_caps(&Nft) -> Capabilities` —— 把 `probe_scripts()` 那 8 条一次性表
+  `inet smwprobe` 脚本真正接到 `nft -c` 执行路径上。此前这些脚本**只被单测引用过**，
+  没有任何代码把探测结果变成能力表，也就是说「按设备实测语法降级」这条设计在运行期是空的；
+  现在 `--capabilities` 与守护进程启动探测都有了唯一入口。单条探测失败不是错误，
+  而是「该语法不用」，失败清单逐条进 warning（否则「游戏域名规则为什么没生效」无从下手）。
+  ② `netlink::HandleOps(NetlinkHandle)` —— 拥有句柄的 `RouteOps` 实现，能 `Arc::new` 后
+  塞进 `transaction::Plane::ops`。此前只有借用型的 `BlockingOps<'a>`，**生产装配没有入口**；
+  不给 `NetlinkHandle` 直接实现 trait 是因为它上面已有一组同名 async 方法，
+  inherent 方法优先，具体类型上会静默调到 async 那个。
+  配套新增 **3 条单测**（`probe_caps_enables_everything_when_checks_pass` /
+  `probe_caps_keeps_conservative_defaults_when_checks_fail` /
+  `version_only_reports_a_real_string`），lib 单测 350 → **353**。
+  限定：沙箱没有 `nft`，这三条注入的是 `/bin/true`、`/bin/false`、`/bin/echo`，
+  证明的是「探测结果 → 能力表」的判定逻辑，**不证明任何 nft 语法在本机可用**。
 * **工程闸门**：`cargo clippy --offline --all-targets -- -D warnings` 归零
   （20 条 lib 告警逐条修，只保留 1 处带中文说明的 `#[allow]`，在测试夹具里）；
   `cargo fmt --all` 建立基线，此后 `clippy` / `fmt --check` 与单测同为提交前置条件。
@@ -137,6 +152,12 @@
   `prerouting` 的 `output` 链：链名与 hook 类型不一致是语义错误（重复注册同一 hook），
   而 `type route hook output` 属于未经设备实测的语法，写进静态占位会让 fw4 在不支持的
   内核上直接启动失败。`output` 链改为运行期按能力探测结果添加，并加了对应断言。
+* **`Nft::version()` 把「子进程跑完了」当成「取到版本了」**（本轮修）。旧实现是
+  `exec::run(&inv).await.ok().map(...)`：`exec::run` 只在超时或无法启动时返回 `Err`，
+  退出码非 0 是 `Ok(Outcome { status: 1 })`，于是 `nft --version` 失败会返回 `Some("")`。
+  这会造出第三种状态 —— 既不是「没装 nft」也不是「版本未知」，而是「版本为空」，
+  而 `--capabilities` 会把它当有效版本号写进能力表。现在构造失败、执行失败、退出码非 0、
+  stdout 与 stderr 全空这四种情况一律 `None`，并各记一条 warning。
 * **带 `comment` 的保护/绕行规则没登记进 `Program::tags`**（`9abc322`，M6 暴露）。
   `firewall::build()` 为保护源地址与绕行目的地址生成了 4 条带标签的规则，却只把游戏与桶规则
   登记进 `tags`。M5 之前没人拿 `tags` 与内核实际规则做集合比对，所以漏登记一直没被发现；
@@ -155,6 +176,9 @@
 * 事务层的 nft 通道只在 `FirewallExec::Sim` 替名下验证过编排顺序；
   **nft 语法与真实下发未验证**（沙箱无 `nft`、无 netfilter 内核支持），归 M10。
 * 桶轮排的热替换（`Nft::replace_rule`）已实现并有单测，但**尚未被周期循环接上**（M7）。
+* 本轮新增的 `firewall::probe_caps()` 与 `netlink::HandleOps` 同样**没有生产调用者**：
+  入口备好了，调用方是还没写的 `src/main.rs`。在 `main.rs` 落地之前，
+  「能力探测会自动降级」这句话在运行期仍然不成立，只是从「无处调用」变成「有人能调用」。
 * 预置项**数据文件**未提供（`root/usr/share/smartmwan/presets/*.json`）：加载器与校验已就位，
   但因「不得编造服务器 IP/端口」，在拿到可引用来源之前不入库任何具体地址。
 * 域名集合的**周期刷新环**未接：`rules::dns_sets` 的对账与解析逻辑完成，
@@ -170,7 +194,7 @@
   M6 之后还多一项：**事务层的八阶段编排在真实 `nft` 通道上是否仍然成立**
   （单测走的是 `FirewallExec::Sim` 替身，只证明顺序与回滚逻辑，不证明语法）。
 * 沙箱可交付的静态结论已齐：`clippy -D warnings` 0 告警、`fmt --check` 无差异、
-  `build` 0 告警、350 单测通过、禁 Lua 检查通过 —— 这五项每次提交前重跑。
+  `build` 0 告警、353 单测通过、禁 Lua 检查通过 —— 这五项每次提交前重跑。
 
 ## [0.3.0] — 2026-10-26（内部里程碑）
 

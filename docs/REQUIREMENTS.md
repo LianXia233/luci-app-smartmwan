@@ -113,7 +113,7 @@
 
 | # | 要求 | 状态 |
 |---|---|---|
-| 9.1 | 功能测试 + 工程测试 | 部分：**350** 个 lib 单测全绿（`config 51 / system 109 / health 49 / scheduler 58 / rules 51 / logging 5 / lib 6 / transaction 21`）；工程闸门已在沙箱实测通过 —— `cargo clippy --offline --all-targets -- -D warnings`（0）、`cargo fmt --all -- --check`（无差异）、`cargo build --offline`（0 警告）、`./scripts/no-lua-check.sh`（退出 0）；`tests/`（集成）未开始；事务层的 21 条走的是 `FirewallExec::Sim` 替身通道，**不等于 nft 语法已验证** |
+| 9.1 | 功能测试 + 工程测试 | 部分：**353** 个 lib 单测全绿（`config 51 / system 112 / health 49 / scheduler 58 / rules 51 / logging 5 / lib 6 / transaction 21`）；工程闸门已在沙箱实测通过 —— `cargo clippy --offline --all-targets -- -D warnings`（0）、`cargo fmt --all -- --check`（无差异）、`cargo build --offline`（0 警告）、`./scripts/no-lua-check.sh`（退出 0）；`tests/`（集成）未开始；事务层的 21 条走的是 `FirewallExec::Sim` 替身通道，**不等于 nft 语法已验证**；能力探测的 3 条新单测注入 `/bin/true`、`/bin/false`、`/bin/echo`，只证明「探测结果 → 能力表」的判定逻辑 |
 | 9.2 | 禁 Lua 自动化检查 | 完成 |
 | 9.3 | 10 条交付判据 | 进行中，逐条见 `docs/TESTING.md` §交付判据 |
 | 9.4 | 绝不把模拟数据当实时状态展示 | 设计上保证：未测量首轮会产出显式 note「尚未完成首轮探测…」，`Outcome` 无数据时 `carries_traffic()==false` |
@@ -165,6 +165,8 @@
 当前正确落点是第 7 步之前的 **M7：RPC + 守护进程入口**（`src/rpc/mod.rs`、`src/main.rs`）。
 事务层已经把「配置→规则→nft 文本→下发→回读→回滚→快照」串成一次提交，缺的是运行期：
 谁读 UCI、谁按周期决策、谁把 `Receipt` 交给 UI、谁在收到 SIGTERM 时清场。
+M7 需要的两块地基本轮已就位（`firewall::probe_caps()` 出能力表、`netlink::HandleOps` 出
+`Arc<dyn RouteOps>`），所以装配 `transaction::Plane` 不再缺入口 —— 缺的仍然只有调用它们的人。
 
 安全与数据面正确性优先于界面打磨 —— 因此 §2、§5、§7 的「需真机」条目在没有设备时一律标注为未验证，
 不用界面完成度掩盖它们。
