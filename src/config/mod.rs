@@ -327,6 +327,7 @@ fn decode_global(sec: &Section) -> Result<GlobalConfig> {
         rpc_socket: opt(sec, "rpc_socket").unwrap_or(d.rpc_socket),
         state_dir: opt(sec, "state_dir").unwrap_or(d.state_dir),
         require_confirm: boolean(sec, "require_confirm", d.require_confirm),
+        dns_ttl_floor_s: number(sec, "dns_ttl_floor_s", d.dns_ttl_floor_s),
     })
 }
 
@@ -468,6 +469,7 @@ fn encode_global(sec: &mut Section, g: &GlobalConfig) {
     sec.set_option("rpc_socket", &g.rpc_socket);
     sec.set_option("state_dir", &g.state_dir);
     sec.set_option("require_confirm", if g.require_confirm { "1" } else { "0" });
+    sec.set_option("dns_ttl_floor_s", &g.dns_ttl_floor_s.to_string());
 }
 
 fn encode_health(sec: &mut Section, h: &HealthConfig) {
@@ -793,6 +795,12 @@ pub fn diff(old: &Config, new: &Config) -> Vec<Change> {
         "global.buckets",
         old.global.buckets.to_string(),
         new.global.buckets.to_string(),
+        false,
+    );
+    cmp(
+        "global.dns_ttl_floor_s",
+        old.global.dns_ttl_floor_s.to_string(),
+        new.global.dns_ttl_floor_s.to_string(),
         false,
     );
     cmp(

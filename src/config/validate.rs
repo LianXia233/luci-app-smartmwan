@@ -191,6 +191,21 @@ pub fn validate(cfg: &Config) -> Report {
         );
     }
 
+    // 域名集合的元素寿命：下限 30 秒、上限 24 小时。
+    // 下限不是为了好看：寿命小于解析周期时，元素每轮都过期 ⇒ 每轮都重解析 +
+    // 每轮都写内核集合，把一个「低频」特性变成高频负载，这正是任务书禁止的方向。
+    if g.dns_ttl_floor_s < 30 || g.dns_ttl_floor_s > 86_400 {
+        err(
+            &mut r,
+            "smartmwan.global.dns_ttl_floor_s",
+            format!(
+                "域名集合元素寿命 {} 秒超出允许范围 30..86400",
+                g.dns_ttl_floor_s
+            ),
+            Some("建议 300 秒；改小会增加解析与内核集合写入频率".into()),
+        );
+    }
+
     if !valid_abs_path(&g.rpc_socket) {
         err(
             &mut r,

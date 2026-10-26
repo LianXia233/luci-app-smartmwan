@@ -364,6 +364,12 @@ pub struct GlobalConfig {
     pub state_dir: String,
     /// 启用前对「可能失联」的变更强制二次确认。
     pub require_confirm: bool,
+    /// 域名规则解析出来的集合元素寿命（秒）。
+    ///
+    /// 为什么可配而不是「用 DNS 真实 TTL」：本实现用 `getaddrinfo`，它**不返回 TTL**，
+    /// 所以这里配的是一个人为寿命 —— 它同时决定「过期后多久重新解析」和
+    /// 「记录已被回收后地址还会在集合里停留多久」。见 `rules::dns_sets` 模块头的限制说明。
+    pub dns_ttl_floor_s: u64,
 }
 
 impl Default for GlobalConfig {
@@ -415,6 +421,9 @@ impl Default for GlobalConfig {
             rpc_socket: "/var/run/smartmwan/rpc.sock".into(),
             state_dir: "/tmp/run/smartmwan".into(),
             require_confirm: true,
+            // 5 分钟：比常见游戏服务器记录的 60~300 秒长，比 CDN 池轮换周期短。
+            // 这是「拿不到真实 TTL」下的折中默认值，不是最优值 —— 见 dns_ttl_floor_s 注释。
+            dns_ttl_floor_s: 300,
         }
     }
 }
