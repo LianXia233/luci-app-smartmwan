@@ -25,10 +25,10 @@ return view.extend({
 	render: function(data) {
 		var smw = smartmwan;   /* LuCI require 返回单例实例，不可再 new */;
 		if (data == null || data.__error != null)
-			return E('div', { 'id': ROOT, 'class': 'smw-state smw-state-error alert-message warning' }, [
+			return smartmwan.page('traffic', E('div', { 'id': ROOT, 'class': 'smw-state smw-state-error alert-message warning' }, [
 				E('strong', {}, [ 'RPC 失败：' ]),
 				E('span', {}, [ (data && data.__error) || '无法读取连接与流量' ])
-			]);
+			]));
 
 		var conns = smw.parse(data.conns);
 		var traffic = smw.parse(data.traffic);
@@ -90,7 +90,7 @@ return view.extend({
 		root.appendChild(E('div', { 'id': 'smw-traffic-refresh', 'class': 'smw-muted' },
 			[ '轮询已启动（每 3 秒）' ]));
 
-		return root;
+		return smartmwan.page('traffic', root);
 	},
 
 	handleSave: null,

@@ -24,12 +24,12 @@ return view.extend({
 		var parsed = data && data.__error == null ? smw.parse(data) : null;
 
 		if (parsed == null || parsed.state == 'error')
-			return E('div', { 'id': ROOT }, smw.states(parsed || { state: 'error', error: { message: data && data.__error } }, {
+			return smartmwan.page('failover', E('div', { 'id': ROOT }, smw.states(parsed || { state: 'error', error: { message: data && data.__error } }, {
 				loadingText: '正在读取主备状态…'
-			}));
+			})));
 
 		if (parsed.state != 'ready')
-			return E('div', { 'id': ROOT }, smw.states(parsed, { emptyText: '暂无主备数据' }));
+			return smartmwan.page('failover', E('div', { 'id': ROOT }, smw.states(parsed, { emptyText: '暂无主备数据' })));
 
 		var f = parsed.data;
 		var root = E('div', { 'id': ROOT, 'class': 'smw-panel' }, [ E('h2', {}, [ '主备切换' ]) ]);
@@ -75,7 +75,7 @@ return view.extend({
 			));
 		}
 
-		return root;
+		return smartmwan.page('failover', root);
 	},
 
 	handleForce: function(wan) {

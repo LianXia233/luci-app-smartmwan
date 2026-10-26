@@ -28,14 +28,14 @@ return view.extend({
 	render: function(data) {
 		var smw = smartmwan;   /* LuCI require 返回单例实例，不可再 new */;
 		if (data == null || data.__error != null)
-			return E('div', { 'id': ROOT, 'class': 'smw-state smw-state-error alert-message warning' }, [
+			return smartmwan.page('config', E('div', { 'id': ROOT, 'class': 'smw-state smw-state-error alert-message warning' }, [
 				E('strong', {}, [ 'RPC 失败：' ]),
 				E('span', {}, [ (data && data.__error) || '无法读取配置' ])
-			]);
+			]));
 
 		var cfg = smw.parse(data.config);
 		if (cfg.state != 'ready')
-			return E('div', { 'id': ROOT }, smw.states(cfg, { loadingText: '正在读取配置…' }));
+			return smartmwan.page('config', E('div', { 'id': ROOT }, smw.states(cfg, { loadingText: '正在读取配置…' })));
 
 		var diff = data.diff || {};
 		var root = E('div', { 'id': ROOT, 'class': 'smw-panel' }, [ E('h2', {}, [ '配置' ]) ]);
@@ -104,7 +104,7 @@ return view.extend({
 			]));
 		}
 
-		return root;
+		return smartmwan.page('config', root);
 	},
 
 	handleApply: function() {

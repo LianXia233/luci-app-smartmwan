@@ -186,6 +186,37 @@ var smw = L.Class.extend({
 		return Math.floor(d / 3600000) + ' 小时前';
 	},
 
+	/* ---------- 页内 TAB 导航 ---------- */
+
+	/**
+	 * 页内 TAB 导航条。
+	 * 本固件的 ucode dispatcher 不支持 menu.d 的 tab 字段（官方应用也未使用），
+	 * 子页面只会进侧边栏子菜单——页面内的横向 TAB 由这里自绘。
+	 * active 取子页面短名（status/lines/balance/failover/games/traffic/config）。
+	 */
+	tabs: function(active) {
+		var pages = [
+			[ 'status',   '运行总览' ],
+			[ 'lines',    '线路管理' ],
+			[ 'balance',  '负载均衡' ],
+			[ 'failover', '主备切换' ],
+			[ 'games',    '游戏路由' ],
+			[ 'traffic',  '连接与流量' ],
+			[ 'config',   '配置' ]
+		];
+		var base = L.url('admin/network/smartmwan');
+		return E('ul', { 'class': 'smw-tabs' }, pages.map(function(p) {
+			return E('li', { 'class': 'smw-tab' + (p[0] == active ? ' smw-tab-active' : '') },
+				[ E('a', { 'href': base + '/' + p[0] }, [ p[1] ]) ]);
+		}));
+	},
+
+	/** 把 TAB 导航插到页面容器最前面并返回容器。所有视图的 return 都应包一层。 */
+	page: function(active, node) {
+		node.insertBefore(this.tabs(active), node.firstChild);
+		return node;
+	},
+
 	/* ---------- 通用零件 ---------- */
 
 	/** 工作模式中文名（balance/failover）。未知值原样返回，不猜。 */
