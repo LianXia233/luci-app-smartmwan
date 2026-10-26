@@ -153,9 +153,10 @@ pub fn parse_text(text: &str, origin: &str) -> Result<Vec<Preset>> {
             domains: r.domains.iter().map(|s| s.trim().to_string()).collect(),
         };
         validate(&p, origin)?;
+        // 同一文件内的重复 id 立刻报错并带上文件名；跨文件的重复由 `load_dir` 汇总后查。
         if out.iter().any(|e: &Preset| e.id == p.id) {
             return Err(Error::Config(format!(
-                "预置项 id 重复：{}（文件 {origin}）",
+                "预置项 id 重复：{}（文件 {origin} 内部）",
                 p.id
             )));
         }
@@ -168,7 +169,9 @@ fn validate(p: &Preset, origin: &str) -> Result<()> {
     if p.id.is_empty() {
         return Err(Error::Config(format!("预置项缺少 id（文件 {origin}）")));
     }
-    // id 会进 nft 对象名，字符集与长度都按最严的来。
+    // id 会出现在 UI、审计文本与错误信息里，也可能被下游拿去做对象名，因此字符集与长度
+    // 按最严的来。注意 nft 对象名实际取自**规则段名**的 slug（`compile()` 里 `slug_of(&rule.name)`），
+    // 不是这个 id —— 别指望改预置项 id 能改集合名。
     if p.id.len() > 40
         || !p
             .id
@@ -355,6 +358,16 @@ mod tests {
         std::fs::remove_file(dir.path().join("c.json")).unwrap();
         std::fs::write(dir.path().join("d.json"), "{ broken").unwrap();
         assert!(load_dir(dir.path()).is_err());
+    }
+
+    #[test]
+    fn duplicate_id_within_one_file_is_error() {
+        // 与跨文件重复是两条不同的分支：这里必须在**同一个文件内**就拦住，
+        // 否则后一条会覆盖前一条，用户看到「预置项存在」但用的是另一份地址。
+        let s = r#"[{"id":"dup","source":"x","targets":["203.0.113.1"]},
+                    {"id":"dup","source":"y","targets":["198.51.100.1"]}]"#;
+        let e = parse_text(s, "t.json").unwrap_err().to_string();
+        assert!(e.contains("重复") && e.contains("t.json"), "{e}");
     }
 
     #[test]
