@@ -24,7 +24,8 @@ apk 在真实 SDK（mediatek/filogic aarch64 musl）构建成功并解包核对�
 ## 2. 可复核指标
 
 ```sh
-cargo test --offline --lib                          # 期望：378 passed; 0 failed
+cargo test --offline --lib                          # 期望：392 passed; 0 failed
+cargo test --offline --tests                        # 期望：33 条集成测试全绿
 cargo clippy --offline --all-targets -- -D warnings # 期望：0 警告
 cargo fmt --all -- --check                          # 期望：无差异
 cargo build --offline                               # 期望：0 警告
@@ -402,8 +403,15 @@ update_game_rules→save、force_failover→forceWan、get_events→getLogs。
 
 ### 9.4 测试缺口（SPEC §14）
 
-* `tests/` 目录**全空**——SPEC 列的 6 个集成测试文件
-  （config/health/scheduler/failover/rules/transaction）一个未写；
+* ~~`tests/` 目录全空~~ —— **六个集成测试文件已落地（2026-10-27，33 条）**：
+  `tests/config.rs`（6）、`tests/health.rs`（4）、`tests/scheduler.rs`（6）、
+  `tests/failover.rs`（6）、`tests/rules.rs`（5）、`tests/transaction.rs`（6）。
+  它们串的是**跨模块路径**，与单测不重复：手写 UCI → 解析 → 校验 → 保存 → diff；
+  健康状态机的完整时间线；七种算法与权重在桶图上的实际效果；主备切换与回切去抖的时序；
+  规则条件在最终 nft 文本里的存在性；事务八阶段、幂等复核、失败回滚与残留回收。
+  编写过程中确认了两条容易写错的既有行为：① 回切带**去抖二次确认**（条件满足后的
+  第一轮只登记意向），② 滑窗容量为 90（失败样本不会立刻被挤出降级判定）。
+  **仍缺**：真机矩阵（见下）、长时间运行/并发配置变更/高连接数性能测试。
 * 真机矩阵只走了单线路：**七种算法真机分别验证、双 WAN 权重/主备切换/多级备用/
   自动与手动回切、游戏命中与择优、IPv4/IPv6 分别验证、模组重拨/网关变化、
   firewall4 重载后规则保持、断电重启幂等**——全部未做（部分依赖第二线路接入 eth0）；
