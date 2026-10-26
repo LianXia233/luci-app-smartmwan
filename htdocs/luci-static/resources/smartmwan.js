@@ -229,6 +229,104 @@ var smw = L.Class.extend({
 			notes.map(function(n) { return E('li', {}, [ n ]) }));
 	},
 
+	/* ---------- 版面零件 ---------- */
+
+	/** 区块卡片：把「标题 + 内容」收进一张卡，页面不再是一串裸表格。
+	 * opts.actions 为可选的一排按钮（渲染在标题右侧）。 */
+	section: function(title, children, opts) {
+		opts = opts || {};
+		var head = E('div', { 'class': 'smw-section-head' }, [
+			E('h3', {}, [ title ]),
+			opts.actions ? E('div', { 'class': 'smw-actions' }, opts.actions) : ''
+		]);
+		return E('div', { 'class': 'smw-section' },
+			[ head ].concat(children || []));
+	},
+
+	/** 键值列表（比两列表格更省横向空间，适合「项目：值」这类只读信息）。 */
+	kv: function(pairs) {
+		return E('dl', { 'class': 'smw-kv' },
+			(pairs || []).map(function(p) {
+				return [ E('dt', {}, [ p[0] ]), E('dd', {}, [ p[1] ]) ];
+			}).reduce(function(a, b) { return a.concat(b); }, []));
+	},
+
+	/** 统计卡片。tone 为 ok/warn/bad 时左侧色条变色（不传则用主题色）。 */
+	stat: function(title, value, note, tone) {
+		return E('div', {
+			'class': 'smw-card' + (tone ? ' smw-card-' + tone : '')
+		}, [
+			E('div', { 'class': 'smw-card-title' }, [ title ]),
+			E('div', { 'class': 'smw-card-value' }, [ String(value) ]),
+			note ? E('div', { 'class': 'smw-card-note' }, [ note ]) : ''
+		]);
+	},
+
+	/** 轮询/刷新指示：让用户知道数据是活的，以及上次更新是什么时候。 */
+	tick: function(text) {
+		return E('span', { 'class': 'smw-tick' }, [ text ]);
+	},
+
+	/** 未保存提示。改了表单却没保存是最容易让用户误判的一种状态，
+	 * 因此必须显式摆出来，而不是只靠按钮的禁用态暗示。 */
+	dirty: function(text, actions) {
+		return E('div', { 'class': 'smw-dirty' }, [
+			E('span', {}, [ text ]),
+			actions ? E('span', { 'class': 'smw-actions' }, actions) : ''
+		]);
+	},
+
+	/* ---------- 表单零件（配置编辑用） ---------- */
+
+	/** 一个字段：标签 + 控件 + 说明。说明不是装饰 —— 单位与取值范围
+	 * 不写清楚，用户填错时后端只能回一句笼统的校验错误。 */
+	field: function(label, control, help) {
+		return E('div', { 'class': 'smw-field' }, [
+			E('label', {}, [ label ]),
+			control,
+			help ? E('span', { 'class': 'smw-muted' }, [ help ]) : ''
+		]);
+	},
+
+	/** 下拉框。options 为 [{value, label}]；onchange(value) 可选。 */
+	select: function(options, value, onchange) {
+		return E('select', {
+			'class': 'cbi-input-select',
+			'change': onchange ? function(ev) {
+				onchange(ev.target.value);
+			} : null
+		}, (options || []).map(function(o) {
+			return E('option', {
+				'value': o.value,
+				'selected': o.value === value ? 'selected' : null
+			}, [ o.label ]);
+		}));
+	},
+
+	/** 数字输入。min/max/step 直接透传给 input，浏览器先挡一道，
+	 * 后端仍然会校验（前端的约束从来不是安全边界）。 */
+	number: function(value, attrs, onchange) {
+		attrs = attrs || {};
+		return E('input', {
+			'type': 'number',
+			'class': 'cbi-input-text',
+			'value': value == null ? '' : String(value),
+			'min': attrs.min == null ? null : String(attrs.min),
+			'max': attrs.max == null ? null : String(attrs.max),
+			'step': attrs.step == null ? null : String(attrs.step),
+			'change': onchange ? function(ev) { onchange(ev.target.value); } : null
+		});
+	},
+
+	/** 复选框。 */
+	checkbox: function(checked, onchange) {
+		return E('input', {
+			'type': 'checkbox',
+			'checked': checked ? 'checked' : null,
+			'change': onchange ? function(ev) { onchange(ev.target.checked); } : null
+		});
+	},
+
 	/** 简单表格：head 为字符串数组，rows 为字符串数组的数组。
 	 * 注意：行必须用 concat 展平进 children —— LuCI 的 E() 不递归展开嵌套数组，
 	 * 嵌套数组会被 String() 化成 "[object HTMLTableRowElement],..."（真机实测）。 */

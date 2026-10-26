@@ -222,6 +222,17 @@
   替身与「无 nft」一律 `None`）、`rules::GameHits`（只认 `smw:game:` 标签，
   同一规则的多条 nft 规则求和）、主循环每 30 秒采样一次；`getGames` 按 slug 返回 `hits`。
   口径：**读不到就是 `null` + 原因说明**，绝不用 0 冒充「规则没命中过」。
+* **LuCI 前端配置编辑（此前 7 页全只读、`save` 从未被 UI 调用）**：均衡页
+  （算法 / 桶数 / 会话保持 / 最小重排间隔 / 逐线路权重）、主备页（主线路、备用顺序
+  按序号排序、回切方式与阈值、**立即回切**）、系统设置页（服务启停、健康检测参数、
+  日志等级、**配置导出/导入**、诊断信息、立即探测）。编辑一律走 `save → diff → apply`，
+  界面不把配置直接塞给内核；未保存的修改显式摆出提示条。
+* **LuCI 前端版式重做**：`smartmwan.css` 重写（语义色变量带 fallback、暗色走
+  `prefers-color-scheme`、区块卡片、带状态点的徽标、表格斑马纹与 hover、
+  窄屏单列、`tabular-nums` 数值、`prefers-reduced-motion` 关动效）；
+  `smartmwan.js` 新增 `section/stat/kv/field/select/number/checkbox/dirty/tick` 零件；
+  总览页补实时吞吐与抖动列、桶分布条形图、最近事务回执；线路页补概览卡片。
+  编辑页**刻意不占用** LuCI 的 `handleSave` 保留钩子（另起 `saveConfig()`）。
 * **集成测试六件套 `tests/`**（此前该目录全空）：`config` / `health` / `scheduler` /
   `failover` / `rules` / `transaction`，共 33 条。串的是**跨模块路径**
   （手写 UCI → 解析 → 校验 → 保存 → diff；健康状态机时间线；七种算法与权重的桶图效果；

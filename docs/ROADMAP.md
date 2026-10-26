@@ -236,18 +236,20 @@ DoD：
 
 DoD：
 
-* [ ] RPC 便捷形态 6 个：`switch_mode` / `set_primary` / `set_backup_order` /
-      `set_algorithm` / `failback`（均为事务层已有能力的薄封装）+
-      `diagnostics`（聚合只读诊断）；
-* [ ] 游戏规则命中统计：游戏规则 nft 体加 `counter`，RPC 暴露命中数
-      （SPEC §6.x / §10.1-5）；
-* [ ] 前端配置编辑（最大缺口，7 页全只读、`save` 从未被 UI 调用）：
-      设置页与均衡页表单 → 主备页（主线路/备用排序/阈值）→ 游戏页
-      （预设选择/规则增删改/评分权重），复用现有 save/validate/diff/apply 链路；
-* [ ] 系统设置页补齐：服务启停按钮、配置导入/导出、诊断信息与版本展示；
-* [ ] 总览页补齐：上下行实时速率（getTraffic 已有数据）、抖动列、
-      主线路/备用顺序展示、最近切换事件列表；
-* [ ] `tests/` 集成测试六件套（config/health/scheduler/failover/rules/transaction）；
+* [x] RPC 便捷形态 6 个：`switchMode` / `setPrimary` / `setBackupOrder` /
+      `setAlgorithm` / `failback`（均为事务层已有能力的薄封装）+
+      `diagnostics`（聚合只读诊断）—— 方法表 23 → 29（2026-10-27）；
+* [x] 游戏规则命中统计：`counter` 已随规则下发，本次补齐「读回来」的链路
+      （`FirewallExec::rule_counters()` → `rules::GameHits` → 主循环 30s 采样 →
+      `getGames.hits`）；读不到时为 `null` 而不是 0（2026-10-27）；
+* [~] 前端配置编辑（原为最大缺口，7 页全只读、`save` 从未被 UI 调用）：
+      设置页与均衡页表单 ✅、主备页（主线路/备用排序/回切阈值）✅、
+      系统设置页（启停/导入导出/诊断）✅；**游戏页的规则增删改与评分权重仍未做**；
+* [x] 系统设置页补齐：服务启停按钮、配置导入/导出、诊断信息展示（2026-10-27）；
+* [x] 总览页补齐：实时吞吐表、抖动列、主备信息、刷新指示；
+      **「最近切换事件列表」改为以「最近一次事务回执 + 决策说明」呈现**
+      （后端未单独提供切换事件流；如需逐条事件需新增 RPC）；
+* [x] `tests/` 集成测试六件套（config/health/scheduler/failover/rules/transaction，33 条）；
 * [ ] 真机剩余矩阵：双 WAN 权重/主备切换/多级备用/自动与手动回切（需第二线路）、
       七种算法真机分别验证、IPv4/IPv6 分别验证、模组重拨、firewall4 重载后规则保持、
       断电重启幂等；

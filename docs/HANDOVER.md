@@ -29,6 +29,44 @@
   "smartmwan is not a constructor"）。新增视图同理；
 * 菜单位置：`admin/network/smartmwan`（仓库所有者指定，放在「网络」菜单下）。
 
+#### 编辑类页面的三条纪律（2026-10-27 新增）
+
+* **不要占用 `handleSave` / `handleSaveApply` / `handleReset`**：它们是 LuCI
+  表单视图的保留钩子，写成自己的保存函数会凭空多出一个全局「保存」按钮，
+  语义与本页的「保存并应用」完全不同。本项目的编辑页把这三个显式设为 `null`，
+  保存函数改叫 `saveConfig()`。
+* **编辑一律走 `save → diff → apply`**：界面改的是 `getConfig` 返回的那份配置
+  的副本（草稿），保存交给后端校验并写盘，**界面从不把配置直接塞给内核**；
+  改单个字段的（主线路/备用顺序/算法）走便捷 RPC，它们内部也是同一条路径。
+  未保存的修改必须用 `smartmwan.dirty()` 摆出来 —— 只靠按钮禁用态暗示，
+  用户会以为改了其实没下发。
+* **命中数 `null` 与 0 是两个意思**：`getGames` 的 `hits` 读不到时是 `null`
+  （UI 显示「—」），只有真的读到 counter 才是数字。显示 0 会被读成
+  「规则没命中过」，而真相可能是通道不是真 nft、根本没读。
+
+#### 版式与样式
+
+* 版面零件集中在 `smartmwan.js`：`section()`（区块卡片）、`stat()`（统计卡片）、
+  `kv()`（键值表）、`field()/select()/number()/checkbox()`（表单）、
+  `dirty()`、`tick()`。新增页面直接复用，别再手写一遍卡片结构；
+* `smartmwan.css` 的两条硬约束：选择器**全部** `.smw-` 作用域（绝不污染 LuCI
+  全局样式），颜色**一律** `var(--x, fallback)`（老主题/暗色主题下变量可能不存在，
+  没有 fallback 会变成不可读的透明或纯黑）；暗色走 `prefers-color-scheme`
+  而不是主题 class —— 后者在不同 LuCI 主题下名字不统一；
+* 数值统一 `font-variant-numeric: tabular-nums`（轮询刷新时不左右跳动），
+  动效在 `prefers-reduced-motion` 下关闭。
+
+#### 改前端怎么自检（没有真机时）
+
+```sh
+# ① 语法：LuCI 的 'require X'; 是合法表达式语句，node 能直接查
+for f in htdocs/luci-static/resources/smartmwan.js htdocs/luci-static/resources/view/smartmwan/*.js; do
+  node --check "$f" || echo "语法错误：$f"
+done
+# ② 渲染冒烟：用 stub 掉 LuCI 运行时（E/L/rpc/ui/view）的脚本跑一遍 render()
+#    脚本刻意**不入库**：它带示例数据，混进仓库就有被当成真实状态的风险。
+```
+
 ## 2. 改了会出事的八条不变式
 
 ### 2.1 fwmark 布局是数据平面合同
