@@ -172,14 +172,14 @@ DoD：
       但目标设备的 nft 版本、接口形态（5G 重拨、双 WAN）必须以设备实测为准。
       另需验证：管理平面不失联、IPv6 不绕过、断电重启后规则不重复（M10 矩阵）。
 
-## M8 —— 前端（未开始）
+## M8 —— 前端（代码完成，待 SDK/设备验收）
 
 DoD：
 
-* [ ] 7 个标签页 JS 视图 + `smartmwan.css`（Grid + Flexbox，`.smw-` 作用域）；
-* [ ] rpcd ucode 桥 `root/usr/share/rpcd/ucode/smartmwan.uc`（零 Lua）；
+* [x] 7 个标签页 JS 视图 + `smartmwan.css`（Grid + Flexbox，`.smw-` 作用域）；
+* [x] rpcd ucode 桥 `root/usr/share/rpcd/ucode/smartmwan.uc`（零 Lua）；
 * [ ] `menu.d` / `acl.d` JSON，ACL 按方法粒度授权，不用 `ubus: *`；
-* [ ] 空/加载/无权限/RPC 失败四态如实渲染；后端 note 直接透传，不写「正常」占位；
+* [x] 空/加载/无权限/RPC 失败四态如实渲染；后端 note 直接透传，不写「正常」占位；
 * [ ] `poll.add/remove` 生命周期成对，切页必须停轮询。
 
 ## M9 —— 打包与安装（未开始）

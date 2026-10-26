@@ -7,16 +7,18 @@
 
 ## 1. 一句话状态
 
-后端七层（配置 / 系统交互 / 健康 / 调度 / 规则 / 事务 / **RPC**）+ **守护进程入口**已完成，
-**378 个单元测试全绿**；RPC 层 23 个方法、守护进程周期循环、CLI 都已落地，
-本仓库现在**具备装到路由器上跑起来的形态**，但前端（LuCI 视图）与打包未做，
-且**未经目标设备验收**（M8/M9/M10）。
+后端七层（配置 / 系统交互 / 健康 / 调度 / 规则 / 事务 / **RPC**）+ **守护进程入口** +
+**前端**已完成，**378 个单元测试全绿**；RPC 层 23 个方法、守护进程周期循环、CLI、
+rpcd ucode 桥（方法级 ACL）+ 7 个 LuCI 视图都已落地，本仓库现在**具备装到路由器上
+跑起来的形态**；打包（M9）与目标设备验收（M10）未做。
 规则层的落点：M5 时它的产物只被单测喂进数据面生成器，现在由事务层真正调用
 （`Coordinator::build_plan` → `rules::compile()` → `firewall::build()` → `route::Applier`）。
 运行期入口也已存在：守护进程主循环读 UCI、按周期决策并调用 `Coordinator::submit()`。
 **本轮端到端验证发生在 WSL**（真 netlink + 真 nft 1.1.3）：事务八阶段、幂等复核、
 崩溃后启动回收、优雅关停回收、23 个 RPC 方法请求/响应全部实测通过；
-并借此抓出六处「单测全绿、真机必爆」的缺陷（见 §6.12–6.17）。
+ucode 桥同样在 WSL 经 CLI 对真实守护进程往返验证（含错误信封透传）；
+浏览器侧渲染未在真实 LuCI 环境验证。借此抓出六处「单测全绿、真机必爆」的缺陷
+（见 §6.12–6.17）。
 
 ## 2. 可复核指标
 
@@ -88,11 +90,16 @@ src/            后端核心，见上表
 docs/           本文档集（要求/路线图/进度/交接/架构/配置/安全/测试）
 research/       两份上游审计（luci.md、buildsystem.md）—— 设计依据
 scripts/        no-lua-check.sh
-root/           仅空目录骨架（空目录不入 git，M9 建包时按代码常量创建）：
-                etc/{config,init.d,rc.d,nftables.d}
-                usr/share/luci/menu.d  usr/share/rpcd/{acl.d,ucode}
-                usr/share/smartmwan/presets   ← 与 `rules::presets::PRESET_DIR` 同名
-htdocs/         仅空目录骨架：luci-static/resources/{view/smartmwan,smartmwan}
+root/           前端装配文件（M8 已落地）：
+                usr/share/rpcd/ucode/smartmwan.uc   ← rpcd ucode 桥（23 方法转发）
+                usr/share/rpcd/acl.d/               ← 方法级 ACL（无通配）
+                usr/share/luci/menu.d/              ← 7 标签页菜单
+                etc/{config,init.d,rc.d,nftables.d} ← M9 建包时按代码常量创建
+                usr/share/smartmwan/presets         ← 与 `rules::presets::PRESET_DIR` 同名
+htdocs/         LuCI 前端资源（M8 已落地）：
+                luci-static/resources/smartmwan.js        ← 共享模块（信封/四态/轮询/格式化）
+                luci-static/resources/view/smartmwan/*.js ← 7 个视图
+                luci-static/resources/smartmwan/smartmwan.css
 tests/          空（集成测试未开始）
 Makefile        不存在（打包未开始）
 ```
@@ -124,7 +131,10 @@ Makefile        不存在（打包未开始）
 | `6cfaac1` | feat(firewall,netlink) | M7 前置：`probe_caps()` 把能力探测接上 `nft -c` 执行路径、`HandleOps` 提供生产用 `Arc<dyn RouteOps>`、修 `Nft::version()` 把「跑完了」当「取到了」（+3 测试 → 353） |
 | `54f85d1` | docs | M7 前置落地后的文档同步（数字全部重测） |
 | `79d22e5` | chore | 强制 LF 行尾（新增 `.gitattributes`：`* text=auto eol=lf` + 显式二进制声明），消除 Windows 签出 CRLF 造成的整仓假改动 |
-| （本提交） | feat(rpc,main) | M7：RPC 层 23 方法 + 守护进程入口与监督循环（+25 测试 → 378）；WSL 真 nft/netlink 端到端验证，并修掉集成测试抓出的六处「单测全绿、真机必爆」缺陷 |
+| `2c34252` | feat(rpc,main) | M7：RPC 层 23 方法 + 守护进程入口与监督循环（+25 测试 → 378）；WSL 真 nft/netlink 端到端验证，并修掉集成测试抓出的六处「单测全绿、真机必爆」缺陷 |
+| `76bda77` | docs | M7 落地后的文档同步（数字全部重测） |
+| `7424b3b` | test(netlink,route) | 测试示例地址改用文档段（192.168.100.0/24），避免与真实设备网段重合 |
+| （本提交） | feat(frontend) | M8：rpcd ucode 桥 + 方法级 ACL + menu.d + 7 个 JS 视图 + CSS；桥接经 WSL ucode CLI 对真实守护进程端到端验证（23 方法往返） |
 
 > **关于本表的哈希**：2026-10-26 按仓库所有者的明确指示，用 `git filter-branch` 把全部提交的
 > author/committer 统一为 `LianXia233`（见 `docs/HANDOVER.md` §6），并 `--force-with-lease` 强推。

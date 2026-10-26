@@ -118,6 +118,27 @@
 * **工程闸门**：`.gitattributes` 强制 LF（`* text=auto eol=lf` + 显式二进制声明），
   消除 Windows 签出 CRLF 造成的整仓假改动；lib 单测 353 → **378**，
   `src/**/*.rs` 合计 **28,283** 行。
+* **前端 M8（零 Lua）**：rpcd ucode 桥 `root/usr/share/rpcd/ucode/smartmwan.uc` ——
+  声明 ubus 对象 `smartmwan` 的 23 个方法及参数策略，连接守护进程 Unix socket 按
+  「4 字节大端长度前缀 + JSON」转发；传输层错误映射成 rpcd 状态码，业务信封
+  （ok/data/error）**原样透传**，语义只在 Rust 侧产生。socket 路径三层解析
+  （uci 模块 → UCI 文本兜底 → 编译期默认），读超时 15 秒，rpcd 主循环不被无限占住。
+  `root/usr/share/rpcd/acl.d/luci-app-smartmwan.json`：**方法级**授权（读 15 个、
+  写 8 个、probeNow 单独分组），不用 `ubus: *` 通配。
+  `root/usr/share/luci/menu.d/luci-app-smartmwan.json`：7 个标签页。
+  `htdocs/luci-static/resources/smartmwan.js` 共享模块：信封解析、四态渲染
+  （加载/空/无权限/RPC 失败，全部如实，不写「正常」占位）、轮询生命周期
+  （poll.add/remove 成对，切页自停）、展示格式化。
+  7 个视图 `htdocs/luci-static/resources/view/smartmwan/*.js`：
+  status（总览+轮询）/ lines（线路+维护模式）/ balance（算法+桶图+份额条）/
+  failover（主备+强制切换二次确认）/ games（规则+冲突+DNS 集合+评分）/
+  traffic（连接+吞吐，3 秒轮询）/ config（待下发变更+apply+rollback+reload，
+  save 与 apply 严格分离）。
+  `htdocs/luci-static/resources/smartmwan/smartmwan.css`：Grid + Flexbox，
+  全部 `.smw-` 作用域。
+  **验证边界**：桥接已在 WSL 用 ucode CLI（从源码构建的 1.x）对真实守护进程做过
+  端到端测试 —— 23 个方法全部往返正确、错误信封透传正确；**浏览器侧渲染未在真实
+  LuCI 环境验证**（无 SDK/设备），归 M10。
 * **工程闸门**：`cargo clippy --offline --all-targets -- -D warnings` 归零
   （20 条 lib 告警逐条修，只保留 1 处带中文说明的 `#[allow]`，在测试夹具里）；
   `cargo fmt --all` 建立基线，此后 `clippy` / `fmt --check` 与单测同为提交前置条件。
