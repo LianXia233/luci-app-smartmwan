@@ -14,10 +14,10 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
-use crate::config::uci::UciFile;
 use crate::config::schema::WanConfig;
+use crate::config::uci::UciFile;
 use crate::logging;
-use crate::system::netlink::{AddrEntry, Family, RouteEntry, RouteOps, RT_TABLE_MAIN, RTN_UNICAST};
+use crate::system::netlink::{AddrEntry, Family, RouteEntry, RouteOps, RTN_UNICAST, RT_TABLE_MAIN};
 use crate::{Error, Result};
 
 /// netifd 接口的一段信息。
@@ -67,7 +67,10 @@ impl Topology {
 
     /// 某个 netifd 接口属于哪些 zone。
     pub fn zones_of(&self, iface: &str) -> Vec<&FirewallZone> {
-        self.zones.iter().filter(|z| z.networks.iter().any(|n| n == iface)).collect()
+        self.zones
+            .iter()
+            .filter(|z| z.networks.iter().any(|n| n == iface))
+            .collect()
     }
 
     /// zone 里所有接口展开成设备名集合（用于 nft 的 `iifname` 集合）。
@@ -174,7 +177,8 @@ pub fn merge_firewall(topo: &mut Topology, text: &str) -> Result<()> {
             .filter(|n| !n.is_empty())
             .or_else(|| s.option("name"))
             .unwrap_or_default();
-        let masq = truthy(s.option("masq").as_deref().unwrap_or("")) || truthy(s.option("masquerade").as_deref().unwrap_or(""));
+        let masq = truthy(s.option("masq").as_deref().unwrap_or(""))
+            || truthy(s.option("masquerade").as_deref().unwrap_or(""));
         let nat = truthy(s.option("nat").as_deref().unwrap_or(""));
         topo.zones.push(FirewallZone {
             name: zname,
@@ -215,12 +219,18 @@ fn topology_from(file: &UciFile) -> Topology {
         let static_ip = s
             .option("ipaddr")
             .and_then(|v| v.split('/').next().unwrap_or("").parse::<IpAddr>().ok())
-            .or_else(|| s.option("ip6addr").and_then(|v| v.split('/').next().unwrap_or("").parse::<IpAddr>().ok()));
+            .or_else(|| {
+                s.option("ip6addr")
+                    .and_then(|v| v.split('/').next().unwrap_or("").parse::<IpAddr>().ok())
+            });
         topo.interfaces.push(NetIface {
             name: s.name.clone().unwrap_or_default(),
             devices,
             proto: s.option("proto").unwrap_or_default(),
-            delegate: !matches!(s.option("delegate").as_deref(), Some("0") | Some("off") | Some("no")),
+            delegate: !matches!(
+                s.option("delegate").as_deref(),
+                Some("0") | Some("off") | Some("no")
+            ),
             table: s.option("table").and_then(|v| v.parse::<u32>().ok()),
             static_ip,
         });
@@ -289,19 +299,26 @@ pub struct SysFs {
 
 impl Default for SysFs {
     fn default() -> SysFs {
-        SysFs { root: PathBuf::from("/sys/class/net") }
+        SysFs {
+            root: PathBuf::from("/sys/class/net"),
+        }
     }
 }
 
 impl SysFs {
     pub fn new(root: impl AsRef<Path>) -> SysFs {
-        SysFs { root: root.as_ref().to_path_buf() }
+        SysFs {
+            root: root.as_ref().to_path_buf(),
+        }
     }
 
     /// 读取一个设备；设备不存在返回 `exists = false` 的骨架而不是错误
     /// （用户配了还没插上的 WAN 是常态，UI 要能显示「设备不存在」）。
     pub fn device(&self, name: &str) -> DeviceState {
-        let mut d = DeviceState { name: name.to_string(), ..Default::default() };
+        let mut d = DeviceState {
+            name: name.to_string(),
+            ..Default::default()
+        };
         if name.is_empty() || name.contains('/') || name.contains('\0') || name.len() > 15 {
             return d;
         }
@@ -343,7 +360,9 @@ impl SysFs {
 }
 
 fn read_trim(p: &Path) -> Option<String> {
-    std::fs::read_to_string(p).ok().map(|s| s.trim().to_string())
+    std::fs::read_to_string(p)
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 fn read_u64(p: &Path) -> u64 {
@@ -355,12 +374,18 @@ fn read_u64(p: &Path) -> u64 {
 /// 返回 `(网关, 是否只有链路级默认路由)`：
 /// `default dev wwan0 scope link`（无网关）在点对点链路上是合法的，
 /// 这时策略路由表里也要装同样形式的默认路由，而不是硬造一个网关。
-pub fn default_gateway(routes: &[RouteEntry], ifindex: u32, family: Family) -> (Option<IpAddr>, bool) {
+pub fn default_gateway(
+    routes: &[RouteEntry],
+    ifindex: u32,
+    family: Family,
+) -> (Option<IpAddr>, bool) {
     let mut best: Option<&RouteEntry> = None;
-    for r in routes
-        .iter()
-        .filter(|r| r.family == family && r.table == RT_TABLE_MAIN as u32 && r.is_default() && r.oif == Some(ifindex))
-    {
+    for r in routes.iter().filter(|r| {
+        r.family == family
+            && r.table == RT_TABLE_MAIN as u32
+            && r.is_default()
+            && r.oif == Some(ifindex)
+    }) {
         best = match best {
             Some(cur) if cur.priority <= r.priority => Some(cur),
             _ => Some(r),
@@ -374,13 +399,21 @@ pub fn default_gateway(routes: &[RouteEntry], ifindex: u32, family: Family) -> (
 
 /// 判断某地址族在 main 表里是否存在默认路由（用于 UI 的「系统本身是否已上网」提示）。
 pub fn has_main_default(routes: &[RouteEntry], family: Family) -> bool {
-    routes
-        .iter()
-        .any(|r| r.family == family && r.table == RT_TABLE_MAIN as u32 && r.is_default() && r.kind == RTN_UNICAST)
+    routes.iter().any(|r| {
+        r.family == family
+            && r.table == RT_TABLE_MAIN as u32
+            && r.is_default()
+            && r.kind == RTN_UNICAST
+    })
 }
 
 /// 为线路挑选源地址：配置优先，其次该设备上第一个「非弃用、非 tentative」的同族地址。
-pub fn pick_source(addrs: &[AddrEntry], ifindex: u32, family: Family, configured: Option<IpAddr>) -> Option<IpAddr> {
+pub fn pick_source(
+    addrs: &[AddrEntry],
+    ifindex: u32,
+    family: Family,
+    configured: Option<IpAddr>,
+) -> Option<IpAddr> {
     if let Some(c) = configured {
         return Some(c);
     }
@@ -452,30 +485,63 @@ pub fn resolve_wan(
         }
     }
     let Some((device, ifindex, state)) = chosen else {
-        notes.push(format!("线路 {} 的候选设备全部不可用: {}", w.name, devices.join(",")));
-        return Err(Error::NoRoute { wan: w.name.clone(), reason: notes.join("; ") });
+        notes.push(format!(
+            "线路 {} 的候选设备全部不可用: {}",
+            w.name,
+            devices.join(",")
+        ));
+        return Err(Error::NoRoute {
+            wan: w.name.clone(),
+            reason: notes.join("; "),
+        });
     };
     if !state.link_up() {
-        notes.push(format!("设备 {device} 链路未 up（operstate={}）", state.operstate));
+        notes.push(format!(
+            "设备 {device} 链路未 up（operstate={}）",
+            state.operstate
+        ));
     }
     if iface.is_none() && w.device.is_empty() {
-        notes.push(format!("/etc/config/network 中没有名为 {} 的接口段", w.name));
+        notes.push(format!(
+            "/etc/config/network 中没有名为 {} 的接口段",
+            w.name
+        ));
     }
 
     let (gw4, link_only4) = default_gateway(routes, ifindex, Family::V4);
     if gw4.is_none() && !link_only4 {
-        notes.push(format!("main 表里没有走 {device} 的默认路由（可能未拨号或未 delegate）"));
+        notes.push(format!(
+            "main 表里没有走 {device} 的默认路由（可能未拨号或未 delegate）"
+        ));
     }
-    let (gw6, link_only6) = if enable_ipv6 { default_gateway(routes, ifindex, Family::V6) } else { (None, false) };
+    let (gw6, link_only6) = if enable_ipv6 {
+        default_gateway(routes, ifindex, Family::V6)
+    } else {
+        (None, false)
+    };
 
     // 用户显式配置优先于自动发现：静态 WAN（光纤猫旁挂、专线）常需要手写网关/源地址。
     let cfg_gw = parse_ip_opt(&w.gateway);
     let cfg_src = parse_ip_opt(&w.src_ip);
     let gw4 = gw4.or_else(|| cfg_gw.filter(|a| matches!(a, IpAddr::V4(_))));
-    let gw6 = if enable_ipv6 { gw6.or_else(|| cfg_gw.filter(|a| matches!(a, IpAddr::V6(_)))) } else { None };
-    let src4 = pick_source(addrs, ifindex, Family::V4, cfg_src.filter(|a| matches!(a, IpAddr::V4(_))));
+    let gw6 = if enable_ipv6 {
+        gw6.or_else(|| cfg_gw.filter(|a| matches!(a, IpAddr::V6(_))))
+    } else {
+        None
+    };
+    let src4 = pick_source(
+        addrs,
+        ifindex,
+        Family::V4,
+        cfg_src.filter(|a| matches!(a, IpAddr::V4(_))),
+    );
     let src6 = if enable_ipv6 {
-        pick_source(addrs, ifindex, Family::V6, cfg_src.filter(|a| matches!(a, IpAddr::V6(_))))
+        pick_source(
+            addrs,
+            ifindex,
+            Family::V6,
+            cfg_src.filter(|a| matches!(a, IpAddr::V6(_))),
+        )
     } else {
         None
     };
@@ -514,29 +580,53 @@ impl Resolved {
 /// 两次设备状态之间的关键变化（网关/地址/链路），用于事件流。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceChange {
-    LinkDown { device: String },
-    LinkUp { device: String },
+    LinkDown {
+        device: String,
+    },
+    LinkUp {
+        device: String,
+    },
     /// 5G 模块重拨：网关或本机地址变了，必须重建该线路的表内容并重新探测。
-    GatewayChanged { device: String, old: Option<IpAddr>, new: Option<IpAddr> },
-    DeviceGone { device: String },
-    DeviceAppeared { device: String },
+    GatewayChanged {
+        device: String,
+        old: Option<IpAddr>,
+        new: Option<IpAddr>,
+    },
+    DeviceGone {
+        device: String,
+    },
+    DeviceAppeared {
+        device: String,
+    },
     /// netifd 接口段换了设备（例如把 `device` 从 eth1 改成 eth2）。
-    DeviceRenamed { old: String, new: String },
+    DeviceRenamed {
+        old: String,
+        new: String,
+    },
 }
 
 /// 比较两次的 [`Resolved`] 快照。
-pub fn diff_resolved(prev: &HashMap<String, Resolved>, cur: &HashMap<String, Resolved>) -> Vec<DeviceChange> {
+pub fn diff_resolved(
+    prev: &HashMap<String, Resolved>,
+    cur: &HashMap<String, Resolved>,
+) -> Vec<DeviceChange> {
     let mut out = Vec::new();
     for (name, p) in prev {
         let Some(c) = cur.get(name) else {
-            out.push(DeviceChange::DeviceGone { device: p.device.clone() });
+            out.push(DeviceChange::DeviceGone {
+                device: p.device.clone(),
+            });
             continue;
         };
         if p.link_up && !c.link_up {
-            out.push(DeviceChange::LinkDown { device: c.device.clone() });
+            out.push(DeviceChange::LinkDown {
+                device: c.device.clone(),
+            });
         }
         if !p.link_up && c.link_up {
-            out.push(DeviceChange::LinkUp { device: c.device.clone() });
+            out.push(DeviceChange::LinkUp {
+                device: c.device.clone(),
+            });
         }
         if p.gw4 != c.gw4 || p.src4 != c.src4 {
             out.push(DeviceChange::GatewayChanged {
@@ -546,12 +636,17 @@ pub fn diff_resolved(prev: &HashMap<String, Resolved>, cur: &HashMap<String, Res
             });
         }
         if p.device != c.device {
-            out.push(DeviceChange::DeviceRenamed { old: p.device.clone(), new: c.device.clone() });
+            out.push(DeviceChange::DeviceRenamed {
+                old: p.device.clone(),
+                new: c.device.clone(),
+            });
         }
     }
     for (name, c) in cur {
         if !prev.contains_key(name) {
-            out.push(DeviceChange::DeviceAppeared { device: format!("{name}→{}", c.device) });
+            out.push(DeviceChange::DeviceAppeared {
+                device: format!("{name}→{}", c.device),
+            });
         }
     }
     out.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
@@ -571,7 +666,12 @@ pub fn resolve_all(
         match ops.dump_routes(f, RT_TABLE_MAIN as u32) {
             Ok(v) => routes.extend(v),
             Err(e) => {
-                crate::logging::warn_ctx("interface", "dump-routes", &format!("{f:?} 路由 dump 失败: {e}"), &[]);
+                crate::logging::warn_ctx(
+                    "interface",
+                    "dump-routes",
+                    &format!("{f:?} 路由 dump 失败: {e}"),
+                    &[],
+                );
             }
         }
     }
@@ -580,7 +680,12 @@ pub fn resolve_all(
         match ops.dump_addresses(f) {
             Ok(v) => addrs.extend(v),
             Err(e) => {
-                crate::logging::warn_ctx("interface", "dump-addr", &format!("{f:?} 地址 dump 失败: {e}"), &[]);
+                crate::logging::warn_ctx(
+                    "interface",
+                    "dump-addr",
+                    &format!("{f:?} 地址 dump 失败: {e}"),
+                    &[],
+                );
             }
         }
     }
@@ -642,9 +747,11 @@ mod tests {
     fn fixture_sysfs(tag: &str) -> SysFs {
         let root = std::env::temp_dir().join(format!("smw-sys-{}-{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        for (name, ifindex, carrier, operstate) in
-            [("eth1", "4", "1", "up"), ("wwan0", "7", "1", "up"), ("br-lan", "6", "1", "up")]
-        {
+        for (name, ifindex, carrier, operstate) in [
+            ("eth1", "4", "1", "up"),
+            ("wwan0", "7", "1", "up"),
+            ("br-lan", "6", "1", "up"),
+        ] {
             let d = root.join(name);
             std::fs::create_dir_all(&d).unwrap();
             std::fs::write(d.join("ifindex"), format!("{ifindex}\n")).unwrap();
@@ -735,7 +842,7 @@ config zone
         assert_eq!(wan.proto, "dhcp");
         let g5 = t.interface("wan_5g").unwrap();
         assert!(!g5.delegate, "delegate '0' 要被识别");
-        assert_eq!(t.zone("wan").unwrap().masq, true);
+        assert!(t.zone("wan").unwrap().masq);
         assert_eq!(t.zone("lan").unwrap().networks, vec!["lan".to_string()]);
     }
 
@@ -743,7 +850,10 @@ config zone
     fn lan_devices_expands_zone_membership() {
         let t = topo();
         // zone 里 `list network 'lan'` 展开成 br-lan，`list device 'br-lan'` 重复项要被去掉
-        assert_eq!(t.lan_devices(&["lan".to_string()]), vec!["br-lan".to_string()]);
+        assert_eq!(
+            t.lan_devices(&["lan".to_string()]),
+            vec!["br-lan".to_string()]
+        );
         // 未知 zone 返回空，调用方要据此报「LAN 区域未匹配到设备」
         assert!(t.lan_devices(&["nope".to_string()]).is_empty());
     }
@@ -752,10 +862,21 @@ config zone
     fn nat_coverage_warns_for_missing_masq() {
         let mut t = topo();
         let wans = vec![
-            WanConfig { name: "wan".into(), enabled: true, ..Default::default() },
-            WanConfig { name: "wan_5g".into(), enabled: true, ..Default::default() },
+            WanConfig {
+                name: "wan".into(),
+                enabled: true,
+                ..Default::default()
+            },
+            WanConfig {
+                name: "wan_5g".into(),
+                enabled: true,
+                ..Default::default()
+            },
         ];
-        assert!(t.check_wan_nat_coverage(&wans).is_empty(), "wan zone 有 masq");
+        assert!(
+            t.check_wan_nat_coverage(&wans).is_empty(),
+            "wan zone 有 masq"
+        );
         // 停用 masq 后必须报警
         t.zones.iter_mut().for_each(|z| z.masq = false);
         let warns = t.check_wan_nat_coverage(&wans);
@@ -766,12 +887,20 @@ config zone
     #[test]
     fn nat_coverage_warns_for_unknown_interface() {
         let t = topo();
-        let wans = vec![WanConfig { name: "ghost".into(), enabled: true, ..Default::default() }];
+        let wans = vec![WanConfig {
+            name: "ghost".into(),
+            enabled: true,
+            ..Default::default()
+        }];
         let warns = t.check_wan_nat_coverage(&wans);
         assert_eq!(warns.len(), 1);
         assert!(warns[0].contains("不属于任何"));
         // 禁用的线路不检查
-        let wans2 = vec![WanConfig { name: "ghost".into(), enabled: false, ..Default::default() }];
+        let wans2 = vec![WanConfig {
+            name: "ghost".into(),
+            enabled: false,
+            ..Default::default()
+        }];
         assert!(t.check_wan_nat_coverage(&wans2).is_empty());
     }
 
@@ -820,11 +949,22 @@ config zone
         std::fs::write(root.join("ipsec0/operstate"), "unknown\n").unwrap();
         let d = SysFs::new(&root).device("ipsec0");
         assert_eq!(d.carrier, None);
-        assert!(d.link_up(), "虚接口没有 carrier 文件时保守认为可用，由探测决定健康度");
+        assert!(
+            d.link_up(),
+            "虚接口没有 carrier 文件时保守认为可用，由探测决定健康度"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    fn route_v4(table: u32, dst: Option<&str>, len: u8, gw: Option<&str>, oif: u32, kind: u8, prio: u32) -> RouteEntry {
+    fn route_v4(
+        table: u32,
+        dst: Option<&str>,
+        len: u8,
+        gw: Option<&str>,
+        oif: u32,
+        kind: u8,
+        prio: u32,
+    ) -> RouteEntry {
         RouteEntry {
             family: Family::V4,
             table,
@@ -847,12 +987,18 @@ config zone
             route_v4(254, None, 0, Some("10.0.0.2"), 4, RTN_UNICAST, 50),
             route_v4(254, Some("10.0.0.0"), 24, None, 4, RTN_UNICAST, 0),
         ];
-        assert_eq!(default_gateway(&routes, 4, Family::V4).0, Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))));
+        assert_eq!(
+            default_gateway(&routes, 4, Family::V4).0,
+            Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)))
+        );
         // 点对点：default dev wwan0 scope link（没有 RTA_GATEWAY）
         let p2p = vec![route_v4(254, None, 0, None, 7, RTN_UNICAST, 0)];
         let (gw, link_only) = default_gateway(&p2p, 7, Family::V4);
         assert_eq!(gw, None);
-        assert!(link_only, "无网关的链路级默认路由要被识别，不能当成「没有出口」");
+        assert!(
+            link_only,
+            "无网关的链路级默认路由要被识别，不能当成「没有出口」"
+        );
         // 别的设备不算
         assert_eq!(default_gateway(&routes, 7, Family::V4).0, None);
         assert!(has_main_default(&routes, Family::V4));
@@ -885,20 +1031,39 @@ config zone
                 tentative: false,
             },
         ];
-        assert_eq!(pick_source(&addrs, 4, Family::V4, None), Some("10.0.0.56".parse().unwrap()));
-        assert_eq!(pick_source(&addrs, 4, Family::V4, Some("1.2.3.4".parse().unwrap())), Some("1.2.3.4".parse().unwrap()));
+        assert_eq!(
+            pick_source(&addrs, 4, Family::V4, None),
+            Some("10.0.0.56".parse().unwrap())
+        );
+        assert_eq!(
+            pick_source(&addrs, 4, Family::V4, Some("1.2.3.4".parse().unwrap())),
+            Some("1.2.3.4".parse().unwrap())
+        );
         assert_eq!(pick_source(&addrs, 9, Family::V4, None), None);
     }
 
     fn wan(name: &str, device: &str) -> WanConfig {
-        WanConfig { name: name.into(), enabled: true, device: device.into(), ..Default::default() }
+        WanConfig {
+            name: name.into(),
+            enabled: true,
+            device: device.into(),
+            ..Default::default()
+        }
     }
 
     #[test]
     fn resolve_wan_combines_config_sysfs_and_netlink() {
         let s = fixture_sysfs("resolve");
         let t = topo();
-        let routes = vec![route_v4(254, None, 0, Some("192.168.100.1"), 4, RTN_UNICAST, 0)];
+        let routes = vec![route_v4(
+            254,
+            None,
+            0,
+            Some("192.168.100.1"),
+            4,
+            RTN_UNICAST,
+            0,
+        )];
         let addrs = vec![AddrEntry {
             family: Family::V4,
             prefix_len: 24,
@@ -906,7 +1071,7 @@ config zone
             address: "192.168.100.20".parse().unwrap(),
             label: None,
             permanent: true,
-                secondary: false,
+            secondary: false,
             deprecated: false,
             tentative: false,
         }];
@@ -979,18 +1144,30 @@ config zone
         let mut cur = HashMap::new();
         cur.insert(
             "wan_5g".into(),
-            Resolved { gw4: Some("10.20.20.1".parse().unwrap()), src4: Some("10.20.20.9".parse().unwrap()), ..prev["wan_5g"].clone() },
+            Resolved {
+                gw4: Some("10.20.20.1".parse().unwrap()),
+                src4: Some("10.20.20.9".parse().unwrap()),
+                ..prev["wan_5g"].clone()
+            },
         );
         let ch = diff_resolved(&prev, &cur);
-        assert!(matches!(ch[0], DeviceChange::GatewayChanged { .. }), "{:?}", ch);
+        assert!(
+            matches!(ch[0], DeviceChange::GatewayChanged { .. }),
+            "{:?}",
+            ch
+        );
         // 链路断开
         let mut down = cur.clone();
         down.get_mut("wan_5g").unwrap().link_up = false;
         let ch2 = diff_resolved(&cur, &down);
-        assert!(ch2.iter().any(|c| matches!(c, DeviceChange::LinkDown { .. })));
+        assert!(ch2
+            .iter()
+            .any(|c| matches!(c, DeviceChange::LinkDown { .. })));
         // 线路被删
         let ch3 = diff_resolved(&prev, &HashMap::new());
-        assert!(ch3.iter().any(|c| matches!(c, DeviceChange::DeviceGone { .. })));
+        assert!(ch3
+            .iter()
+            .any(|c| matches!(c, DeviceChange::DeviceGone { .. })));
     }
 
     #[test]
@@ -1001,7 +1178,12 @@ config zone
         };
         let cur = TrafficSample {
             at_ms: 3000,
-            per_device: [("eth1".to_string(), (1500, 100)), ("eth9".to_string(), (10, 10))].into_iter().collect(),
+            per_device: [
+                ("eth1".to_string(), (1500, 100)),
+                ("eth9".to_string(), (10, 10)),
+            ]
+            .into_iter()
+            .collect(),
         };
         let d = cur.delta(&prev);
         assert_eq!(d["eth1"], (500, 0), "计数器回绕不能让差值下溢");
@@ -1030,4 +1212,3 @@ config zone
         assert_eq!(t2.interface("x").unwrap().static_ip, None);
     }
 }
-

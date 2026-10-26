@@ -184,11 +184,7 @@ impl Assignment {
 
 impl fmt::Display for Assignment {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}（变化 {} 个桶）",
-            self.reason, self.moved
-        )
+        write!(f, "{}（变化 {} 个桶）", self.reason, self.moved)
     }
 }
 
@@ -247,7 +243,12 @@ fn static_weighted(req: &Request) -> Result<Assignment> {
         req.buckets,
         describe(&usable, &counts)
     );
-    Ok(Assignment { buckets, moved, reason, notes })
+    Ok(Assignment {
+        buckets,
+        moved,
+        reason,
+        notes,
+    })
 }
 
 /// 动态算法：按剩余容量分配，再套一层限流与「值得搬吗」判断。
@@ -305,7 +306,10 @@ fn dynamic(req: &Request, mode: SpareMode) -> Result<Assignment> {
 
     // 2) 常规搬迁：受单轮上限与「值得搬吗」约束。
     let limit = if req.interval_ok {
-        shift_limit(req.buckets, (1000 - req.smoothing_permille as i64).max(10) as u32)
+        shift_limit(
+            req.buckets,
+            (1000 - req.smoothing_permille as i64).max(10) as u32,
+        )
     } else {
         0
     };
@@ -365,7 +369,10 @@ fn dynamic(req: &Request, mode: SpareMode) -> Result<Assignment> {
 
 /// 最大余额法：按权重把 `buckets` 个桶分给候选线路，保证总和恰好等于桶数。
 fn distribute(cands: &[&Candidate], buckets: usize) -> Vec<usize> {
-    let weights: Vec<u64> = cands.iter().map(|c| c.effective_weight_permille()).collect();
+    let weights: Vec<u64> = cands
+        .iter()
+        .map(|c| c.effective_weight_permille())
+        .collect();
     let total: u64 = weights.iter().sum();
     if total == 0 {
         // 全部权重为 0（异常配置）：平均分，保证不留空桶。
@@ -419,7 +426,13 @@ fn fill_interleaved(buckets: &mut [u8], counts: &[usize]) {
     let mut next = starts.clone();
     let step: Vec<f64> = counts
         .iter()
-        .map(|c| if *c == 0 { 0.0 } else { total as f64 / *c as f64 })
+        .map(|c| {
+            if *c == 0 {
+                0.0
+            } else {
+                total as f64 / *c as f64
+            }
+        })
         .collect();
     let mut cursor: Vec<f64> = (0..counts.len())
         .map(|i| starts[i] as f64 + (if counts[i] == 0 { f64::INFINITY } else { 0.0 }))
@@ -494,7 +507,12 @@ fn count_moves(previous: Option<&[u8]>, now: &[u8]) -> usize {
 }
 
 /// 哪些桶最该动：先动「当前线路桶数超出目标」的那些，且从尾部开始。
-fn overloaded_indices(cur: &[u8], wanted: &[u8], cands: &[&Candidate], buckets: usize) -> Vec<usize> {
+fn overloaded_indices(
+    cur: &[u8],
+    wanted: &[u8],
+    cands: &[&Candidate],
+    buckets: usize,
+) -> Vec<usize> {
     let cur_counts = tally(cur, cands);
     let want_counts = tally(wanted, cands);
     let mut surplus: Vec<(usize, i64)> = Vec::new();
@@ -548,7 +566,6 @@ fn fix_rounding(counts: &mut [usize], total: usize) {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     //! 桶分配是数据平面的直接输入，这里逐条守住「比例准确、总量守恒、
@@ -572,12 +589,25 @@ mod tests {
     /// 带可信采样与带宽上限的候选（动态算法只有在两者齐备时才会真的动态）。
     fn measured(name: &str, slot: u8, rx_kbps: u64, limit_kbps: u32) -> Candidate {
         Candidate {
-            load: Load { rx_kbps, tx_kbps: 0, down_kbps: limit_kbps, up_kbps: 0, conns: 0, new_conns: 0, conn_limit: 0, measured: true },
+            load: Load {
+                rx_kbps,
+                tx_kbps: 0,
+                down_kbps: limit_kbps,
+                up_kbps: 0,
+                conns: 0,
+                new_conns: 0,
+                conn_limit: 0,
+                measured: true,
+            },
             ..cand(name, slot, 1, true)
         }
     }
 
-    fn req<'a>(algorithm: Algorithm, cands: &'a [Candidate], previous: Option<&'a [u8]>) -> Request<'a> {
+    fn req<'a>(
+        algorithm: Algorithm,
+        cands: &'a [Candidate],
+        previous: Option<&'a [u8]>,
+    ) -> Request<'a> {
         Request {
             algorithm,
             buckets: 64,
@@ -599,7 +629,11 @@ mod tests {
         let a = assign(&req(Algorithm::WeightedHash, &cands, None)).unwrap();
         assert_eq!(a.buckets.len(), 64);
         assert_eq!(counts(&a), vec![(1, 48), (2, 16)], "3:1 必须精确落到 48:16");
-        assert_eq!(a.share().iter().map(|(_, n)| n).sum::<usize>(), 64, "桶数守恒");
+        assert_eq!(
+            a.share().iter().map(|(_, n)| n).sum::<usize>(),
+            64,
+            "桶数守恒"
+        );
         assert!(a.buckets.iter().all(|b| *b != 0), "静态分配不能留下空桶");
     }
 
@@ -620,7 +654,11 @@ mod tests {
 
     #[test]
     fn fractional_weights_still_sum_exactly() {
-        let cands = vec![cand("a", 1, 1, true), cand("b", 2, 1, true), cand("c", 3, 1, true)];
+        let cands = vec![
+            cand("a", 1, 1, true),
+            cand("b", 2, 1, true),
+            cand("c", 3, 1, true),
+        ];
         let a = assign(&req(Algorithm::SrcIpDstIp, &cands, None)).unwrap();
         let sum: usize = counts(&a).iter().map(|(_, n)| n).sum();
         assert_eq!(sum, 64, "三条线路均分 64 桶时必须凑满而不是留空");
@@ -660,7 +698,10 @@ mod tests {
         let cands = vec![cand("wan1", 1, 2, true), cand("wan2", 2, 1, true)];
         let first = assign(&req(Algorithm::WeightedHash, &cands, None)).unwrap();
         let second = assign(&req(Algorithm::WeightedHash, &cands, Some(&first.buckets))).unwrap();
-        assert_eq!(second.moved, 0, "同样的输入必须得到同样的桶图，否则每次重排都会打断新建连接分布");
+        assert_eq!(
+            second.moved, 0,
+            "同样的输入必须得到同样的桶图，否则每次重排都会打断新建连接分布"
+        );
         assert_eq!(second.buckets, first.buckets);
     }
 
@@ -671,17 +712,29 @@ mod tests {
         let a = assign(&req(Algorithm::WeightedHash, &before, None)).unwrap();
         let after = vec![cand("wan1", 1, 2, true), cand("wan2", 2, 1, true)];
         let b = assign(&req(Algorithm::WeightedHash, &after, Some(&a.buckets))).unwrap();
-        assert_eq!(counts(&b), vec![(1, 43), (2, 21)], "2:1 应为 43:21（最大余额法）");
+        assert_eq!(
+            counts(&b),
+            vec![(1, 43), (2, 21)],
+            "2:1 应为 43:21（最大余额法）"
+        );
         // 理论下限 = wan2 必须让出的桶数（32 − 21 = 11）；交错铺开不应显著超过它。
         assert!(b.moved >= 11, "权重变了不可能零变更: {}", b.moved);
-        assert!(b.moved <= 22, "交错铺开应把变更压到接近理论下限 11，实测 {}", b.moved);
+        assert!(
+            b.moved <= 22,
+            "交错铺开应把变更压到接近理论下限 11，实测 {}",
+            b.moved
+        );
     }
 
     #[test]
     fn dynamic_algorithm_degrades_when_samples_are_untrustworthy() {
         let cands = vec![cand("wan1", 1, 1, true), cand("wan2", 2, 3, true)];
         let a = assign(&req(Algorithm::LeastTraffic, &cands, None)).unwrap();
-        assert!(a.notes.iter().any(|n| n.contains("采样不可信")), "{:?}", a.notes);
+        assert!(
+            a.notes.iter().any(|n| n.contains("采样不可信")),
+            "{:?}",
+            a.notes
+        );
         assert!(a.reason.contains("动态降级"), "{}", a.reason);
         // 退回权重后仍是 1:3 的精确分配
         assert_eq!(counts(&a), vec![(1, 16), (2, 48)]);
@@ -689,20 +742,29 @@ mod tests {
 
     #[test]
     fn dynamic_moves_only_within_shift_budget() {
-        let cands = vec![measured("wan1", 1, 900_000, 1_000_000), measured("wan2", 2, 100_000, 1_000_000)];
+        let cands = vec![
+            measured("wan1", 1, 900_000, 1_000_000),
+            measured("wan2", 2, 100_000, 1_000_000),
+        ];
         let previous = vec![1u8; 64];
         let a = assign(&req(Algorithm::LeastTraffic, &cands, Some(&previous))).unwrap();
         let budget = shift_limit(64, 300);
         assert_eq!(a.moved, budget, "首轮应按预算上限搬动，不能一次性全量重建");
         assert_eq!(counts(&a).iter().find(|(s, _)| *s == 2).unwrap().1, budget);
         // 目标态是 6:58，本轮只应搬到预算为止
-        assert!(counts(&a).iter().find(|(s, _)| *s == 1).unwrap().1 > 6, "剩余差距留给后续轮次");
+        assert!(
+            counts(&a).iter().find(|(s, _)| *s == 1).unwrap().1 > 6,
+            "剩余差距留给后续轮次"
+        );
     }
 
     #[test]
     fn dynamic_needs_a_visible_advantage_before_moving() {
         // wan1 更空（spare 600 vs 500）：把桶从 wan1 搬去 wan2 没有收益
-        let cands = vec![measured("wan1", 1, 400_000, 1_000_000), measured("wan2", 2, 500_000, 1_000_000)];
+        let cands = vec![
+            measured("wan1", 1, 400_000, 1_000_000),
+            measured("wan2", 2, 500_000, 1_000_000),
+        ];
         let previous = vec![1u8; 64];
         let a = assign(&req(Algorithm::LeastTraffic, &cands, Some(&previous))).unwrap();
         assert_eq!(a.moved, 0, "优势不足不得搬动: {:?}", counts(&a));
@@ -712,51 +774,98 @@ mod tests {
     #[test]
     fn necessary_eviction_ignores_interval_and_budget() {
         // 上一轮全部指向 slot 3，而 3 已经不可用：64 个桶必须立刻离开
-        let cands = vec![measured("wan1", 1, 100_000, 1_000_000), measured("wan2", 2, 100_000, 1_000_000)];
+        let cands = vec![
+            measured("wan1", 1, 100_000, 1_000_000),
+            measured("wan2", 2, 100_000, 1_000_000),
+        ];
         let previous = vec![3u8; 64];
         let mut r = req(Algorithm::LeastTraffic, &cands, Some(&previous));
         r.interval_ok = false;
         let a = assign(&r).unwrap();
-        assert!(a.buckets.iter().all(|b| *b != 3), "线路没了还留着标记就是黑洞");
+        assert!(
+            a.buckets.iter().all(|b| *b != 3),
+            "线路没了还留着标记就是黑洞"
+        );
         assert_eq!(a.moved, 64);
         assert!(a.reason.contains("强制搬离"), "{}", a.reason);
     }
 
     #[test]
     fn ordinary_moves_are_held_back_before_the_rebalance_interval() {
-        let cands = vec![measured("wan1", 1, 900_000, 1_000_000), measured("wan2", 2, 100_000, 1_000_000)];
+        let cands = vec![
+            measured("wan1", 1, 900_000, 1_000_000),
+            measured("wan2", 2, 100_000, 1_000_000),
+        ];
         let previous = vec![1u8; 64];
         let mut r = req(Algorithm::LeastTraffic, &cands, Some(&previous));
         r.interval_ok = false;
         let a = assign(&r).unwrap();
-        assert_eq!(a.moved, 0, "未到重排间隔且没有必要搬迁时，数据面必须保持不动");
-        assert!(a.notes.iter().any(|n| n.contains("未到最小重排间隔")), "{:?}", a.notes);
+        assert_eq!(
+            a.moved, 0,
+            "未到重排间隔且没有必要搬迁时，数据面必须保持不动"
+        );
+        assert!(
+            a.notes.iter().any(|n| n.contains("未到最小重排间隔")),
+            "{:?}",
+            a.notes
+        );
     }
 
     #[test]
     fn connection_capped_line_is_evicted_even_without_advantage() {
         // 两条线路剩余容量接近，但 wan1 已经撞到连接数上限：仍要搬
         let mut a1 = cand("wan1", 1, 1, true);
-        a1.load = Load { conns: 1000, conn_limit: 1000, down_kbps: 1_000_000, rx_kbps: 500_000, measured: true, ..Default::default() };
+        a1.load = Load {
+            conns: 1000,
+            conn_limit: 1000,
+            down_kbps: 1_000_000,
+            rx_kbps: 500_000,
+            measured: true,
+            ..Default::default()
+        };
         let mut a2 = cand("wan2", 2, 1, true);
-        a2.load = Load { conns: 100, conn_limit: 1000, down_kbps: 1_000_000, rx_kbps: 520_000, measured: true, ..Default::default() };
+        a2.load = Load {
+            conns: 100,
+            conn_limit: 1000,
+            down_kbps: 1_000_000,
+            rx_kbps: 520_000,
+            measured: true,
+            ..Default::default()
+        };
         let cands = vec![a1, a2];
         let previous = vec![1u8; 64];
-        let out = assign(&req(Algorithm::LeastNewConnections, &cands, Some(&previous))).unwrap();
+        let out = assign(&req(
+            Algorithm::LeastNewConnections,
+            &cands,
+            Some(&previous),
+        ))
+        .unwrap();
         assert!(out.moved > 0, "连接数封顶必须触发搬迁: {:?}", out.moved);
-        assert!(out.buckets.iter().any(|b| *b == 2));
+        assert!(out.buckets.contains(&2));
     }
 
     #[test]
     fn spare_permille_refuses_to_guess_without_limits() {
-        let l = Load { rx_kbps: 1000, measured: true, ..Default::default() };
+        let l = Load {
+            rx_kbps: 1000,
+            measured: true,
+            ..Default::default()
+        };
         assert_eq!(l.used_permille(), None, "没配带宽上限时不能编造占用率");
         assert_eq!(l.spare_permille(SpareMode::Traffic), None);
         assert_eq!(l.conn_permille(), None);
         assert!(!l.conn_capped());
-        let l2 = Load { rx_kbps: 2_000_000, down_kbps: 1_000, ..Default::default() };
+        let l2 = Load {
+            rx_kbps: 2_000_000,
+            down_kbps: 1_000,
+            ..Default::default()
+        };
         assert_eq!(l2.used_permille(), Some(1000), "超上限必须钳位而不是溢出");
-        assert_eq!(l2.spare_permille(SpareMode::Traffic), Some(1), "留 1‰ 保证还能拿到桶");
+        assert_eq!(
+            l2.spare_permille(SpareMode::Traffic),
+            Some(1),
+            "留 1‰ 保证还能拿到桶"
+        );
     }
 
     #[test]
@@ -773,6 +882,12 @@ mod tests {
         // 动态算法降级路径之外的组合：静态函数被直接调用时要提示语义不符
         let cands = vec![cand("wan1", 1, 1, true), cand("wan2", 2, 1, true)];
         let a = assign(&req(Algorithm::LeastTraffic, &cands, None)).unwrap();
-        assert!(a.notes.iter().any(|n| n.contains("采样不可信") || n.contains("不属于静态哈希")), "{:?}", a.notes);
+        assert!(
+            a.notes
+                .iter()
+                .any(|n| n.contains("采样不可信") || n.contains("不属于静态哈希")),
+            "{:?}",
+            a.notes
+        );
     }
 }

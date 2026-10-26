@@ -187,8 +187,12 @@ impl RuleEntry {
     /// 比留下我们的垃圾严重得多。
     pub fn is_ours(&self) -> bool {
         use crate::marks;
-        let Some(mark) = self.fwmark else { return false };
-        let Some(mask) = self.fwmask else { return false };
+        let Some(mark) = self.fwmark else {
+            return false;
+        };
+        let Some(mask) = self.fwmask else {
+            return false;
+        };
         if mask != marks::RULE_MASK {
             return false;
         }
@@ -237,7 +241,8 @@ impl RouteEntry {
     /// 是否属于本插件拥有的表（表号由槽位决定）。
     pub fn in_our_table(&self) -> bool {
         let t = self.table;
-        t >= crate::marks::TABLE_BASE + 1 && t <= crate::marks::TABLE_BASE + crate::marks::MAX_WANS as u32
+        t > crate::marks::TABLE_BASE
+            && t <= crate::marks::TABLE_BASE + crate::marks::MAX_WANS as u32
     }
 }
 
@@ -325,7 +330,11 @@ impl RouteSpec {
     }
 
     pub fn local_host(table: u32, addr: IpAddr, oif: u32) -> RouteSpec {
-        let len = if matches!(addr, IpAddr::V4(_)) { 32 } else { 128 };
+        let len = if matches!(addr, IpAddr::V4(_)) {
+            32
+        } else {
+            128
+        };
         RouteSpec {
             family: Family::of(addr),
             table,
@@ -484,9 +493,7 @@ pub fn encode_rule(msg_type: u16, seq: u32, pid: u32, spec: &RuleSpec, create: b
     if spec.table > 255 {
         b.attr_u32(FRA_TABLE, spec.table);
     }
-    let flags = NLM_F_REQUEST
-        | NLM_F_ACK
-        | if create { NLM_F_CREATE | NLM_F_EXCL } else { 0 };
+    let flags = NLM_F_REQUEST | NLM_F_ACK | if create { NLM_F_CREATE | NLM_F_EXCL } else { 0 };
     nlmsg(msg_type, flags, seq, pid, b.bytes())
 }
 
@@ -518,9 +525,7 @@ pub fn encode_route(msg_type: u16, seq: u32, pid: u32, spec: &RouteSpec, create:
     if spec.priority != 0 {
         b.attr_u32(RTA_PRIORITY, spec.priority);
     }
-    let flags = NLM_F_REQUEST
-        | NLM_F_ACK
-        | if create { NLM_F_CREATE | NLM_F_EXCL } else { 0 };
+    let flags = NLM_F_REQUEST | NLM_F_ACK | if create { NLM_F_CREATE | NLM_F_EXCL } else { 0 };
     nlmsg(msg_type, flags, seq, pid, b.bytes())
 }
 
@@ -548,7 +553,14 @@ pub fn encode_dump(msg_type: u16, seq: u32, pid: u32, family: Family, table: u32
         _ => {
             // RTM_GETROUTE：AF_UNSPEC 时内核会同时返回 v4/v6；
             // 为了可控，我们总是按族 dump。
-            let mut b = rtmsg(family, table_byte(table), 0, RTPROT_UNSPEC, RT_SCOPE_UNIVERSE, RTN_UNSPEC);
+            let mut b = rtmsg(
+                family,
+                table_byte(table),
+                0,
+                RTPROT_UNSPEC,
+                RT_SCOPE_UNIVERSE,
+                RTN_UNSPEC,
+            );
             if table > 255 {
                 b.attr_u32(RTA_TABLE, table);
             }
@@ -569,7 +581,9 @@ impl<'a> Attrs<'a> {
         Attrs { rest: raw }
     }
 
-    pub fn next(&mut self) -> Option<(u16, &'a [u8])> {
+    /// 取下一个属性。刻意不叫 `next`：`Attrs` 同时实现了 `Iterator`，
+    /// 同名内在方法会让调用点在「内在方法」与「trait 方法」之间产生歧义（clippy 亦据此报警）。
+    pub fn next_attr(&mut self) -> Option<(u16, &'a [u8])> {
         loop {
             if self.rest.len() < 4 {
                 return None;
@@ -617,7 +631,7 @@ impl<'a> Iterator for Attrs<'a> {
     type Item = (u16, &'a [u8]);
 
     fn next(&mut self) -> Option<Self::Item> {
-        Attrs::next(self)
+        self.next_attr()
     }
 }
 
@@ -760,7 +774,10 @@ pub enum Parsed {
     Routes(Vec<RouteEntry>),
     Addresses(Vec<AddrEntry>),
     /// 内核对本请求的应答（NLMSG_ERROR），code=0 表示成功。
-    Ack { error: i32, message: String },
+    Ack {
+        error: i32,
+        message: String,
+    },
     Done,
 }
 
@@ -769,7 +786,12 @@ pub enum Parsed {
 /// 返回 `Err` 只用于「缓冲区被截断/协议错乱」这类真错误；
 /// 单条无法解析的消息会被跳过并计数（写日志），因为内核可能发来
 /// 我们尚未认识的属性类型，此时不应该放弃整份 dump。
-pub fn parse_stream(msg_type: u16, seq: u32, pid: u32, buf: &[u8]) -> Result<(Vec<Parsed>, bool /*done*/, u32)> {
+pub fn parse_stream(
+    msg_type: u16,
+    seq: u32,
+    pid: u32,
+    buf: &[u8],
+) -> Result<(Vec<Parsed>, bool /*done*/, u32)> {
     let mut out = Vec::new();
     let mut rest = buf;
     let mut done = false;
@@ -797,7 +819,10 @@ pub fn parse_stream(msg_type: u16, seq: u32, pid: u32, buf: &[u8]) -> Result<(Ve
                 // struct nlmsgerr: i32 error + 原始 16 字节请求头
                 let code = i32::from_le_bytes([body[0], body[1], body[2], body[3]]);
                 let desc = describe_errno(code);
-                out.push(Parsed::Ack { error: code, message: desc });
+                out.push(Parsed::Ack {
+                    error: code,
+                    message: desc,
+                });
                 if code != 0 {
                     done = true;
                 }
@@ -805,7 +830,9 @@ pub fn parse_stream(msg_type: u16, seq: u32, pid: u32, buf: &[u8]) -> Result<(Ve
             NLMSG_DONE => done = true,
             NLMSG_NOOP => {}
             NLMSG_OVERRUN => {
-                return Err(Error::Netlink("内核报告 dump 溢出（ENOBUFS），需要重试点".into()));
+                return Err(Error::Netlink(
+                    "内核报告 dump 溢出（ENOBUFS），需要重试点".into(),
+                ));
             }
             t if t == msg_type => {
                 if msg_type == RTM_NEWROUTE || msg_type == RTM_GETROUTE {
@@ -842,7 +869,9 @@ pub fn parse_stream(msg_type: u16, seq: u32, pid: u32, buf: &[u8]) -> Result<(Ve
 /// 把 `Parsed` 列表压平成最终结果；错误 ack 直接短路。
 pub fn collect(entries: &mut Vec<Parsed>, item: Parsed) -> Result<()> {
     match item {
-        Parsed::Ack { error, message } if error != 0 => Err(Error::Netlink(format!("{message}（errno {error}）"))),
+        Parsed::Ack { error, message } if error != 0 => {
+            Err(Error::Netlink(format!("{message}（errno {error}）")))
+        }
         Parsed::Ack { .. } => Ok(()),
         other => {
             entries.push(other);
@@ -922,7 +951,9 @@ pub struct NetlinkHandle {
 impl NetlinkHandle {
     /// 打开连接并交给门面。没有权限时直接返回错误，由调用方决定降级方式。
     pub fn open(recv_timeout: Duration) -> Result<NetlinkHandle> {
-        Ok(NetlinkHandle { inner: std::sync::Arc::new(Mutex::new(Connection::open(recv_timeout)?)) })
+        Ok(NetlinkHandle {
+            inner: std::sync::Arc::new(Mutex::new(Connection::open(recv_timeout)?)),
+        })
     }
 
     async fn run<T>(&self, f: impl FnOnce(&Connection) -> Result<T> + Send + 'static) -> Result<T>
@@ -931,9 +962,9 @@ impl NetlinkHandle {
     {
         let c = self.inner.clone();
         tokio::task::spawn_blocking(move || {
-            let guard = c
-                .lock()
-                .map_err(|_| Error::Netlink("netlink 互斥锁中毒：此前有 panic 破坏了连接，需重启服务".into()))?;
+            let guard = c.lock().map_err(|_| {
+                Error::Netlink("netlink 互斥锁中毒：此前有 panic 破坏了连接，需重启服务".into())
+            })?;
             f(&guard)
         })
         .await
@@ -942,10 +973,9 @@ impl NetlinkHandle {
 
     /// 已在阻塞线程内的同步访问。锁中毒必须报出来：那意味着连接状态不可信。
     pub fn sync<T>(&self, f: impl FnOnce(&Connection) -> T) -> Result<T> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(|_| Error::Netlink("netlink 互斥锁中毒：此前有 panic 破坏了连接，需重启服务".into()))?;
+        let guard = self.inner.lock().map_err(|_| {
+            Error::Netlink("netlink 互斥锁中毒：此前有 panic 破坏了连接，需重启服务".into())
+        })?;
         Ok(f(&guard))
     }
 
@@ -1031,7 +1061,13 @@ impl Connection {
             ));
         }
         // SAFETY: 创建的是标准 NETLINK_ROUTE datagram socket，失败返回 -1。
-        let raw = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_RAW | libc::SOCK_CLOEXEC, NETLINK_ROUTE) };
+        let raw = unsafe {
+            libc::socket(
+                libc::AF_NETLINK,
+                libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+                NETLINK_ROUTE,
+            )
+        };
         if raw < 0 {
             let e = std::io::Error::last_os_error();
             return Err(Error::Netlink(format!("打开 NETLINK_ROUTE 失败: {e}")));
@@ -1107,7 +1143,12 @@ impl Connection {
         while sent < msg.len() {
             // SAFETY: write 到已连接 netlink socket。
             let n = unsafe {
-                libc::send(fd, msg[sent..].as_ptr() as *const libc::c_void, msg.len() - sent, libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL)
+                libc::send(
+                    fd,
+                    msg[sent..].as_ptr() as *const libc::c_void,
+                    msg.len() - sent,
+                    libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
+                )
             };
             if n < 0 {
                 let e = std::io::Error::last_os_error();
@@ -1115,7 +1156,10 @@ impl Connection {
                     continue;
                 }
                 if e.kind() == std::io::ErrorKind::WouldBlock {
-                    return Err(Error::Timeout { operation: "netlink send".into(), elapsed_ms: 0 });
+                    return Err(Error::Timeout {
+                        operation: "netlink send".into(),
+                        elapsed_ms: 0,
+                    });
                 }
                 return Err(Error::Netlink(format!("send 失败: {e}")));
             }
@@ -1137,11 +1181,14 @@ impl Connection {
                         elapsed_ms: self.recv_timeout.as_millis() as u64,
                     }),
                     Some(libc::EINTR) => continue,
-                    Some(libc::ENOBUFS) => Err(Error::Netlink("recv ENOBUFS：dump 期间内核事件缓冲溢出".into())),
+                    Some(libc::ENOBUFS) => Err(Error::Netlink(
+                        "recv ENOBUFS：dump 期间内核事件缓冲溢出".into(),
+                    )),
                     _ => Err(Error::Netlink(format!("recv 失败: {e}"))),
                 };
             }
-            let (parsed, is_done, _skipped) = parse_stream(expect_type, seq, std::process::id(), &buf[..n as usize])?;
+            let (parsed, is_done, _skipped) =
+                parse_stream(expect_type, seq, std::process::id(), &buf[..n as usize])?;
             for p in parsed {
                 let err = match &p {
                     Parsed::Ack { error, .. } => *error != 0,
@@ -1158,7 +1205,12 @@ impl Connection {
             }
         }
         if !done {
-            logging::warn_ctx("netlink", "dump", "dump 达到读取次数上限，结果可能不完整", &[]);
+            logging::warn_ctx(
+                "netlink",
+                "dump",
+                "dump 达到读取次数上限，结果可能不完整",
+                &[],
+            );
         }
         Ok((acc, done))
     }
@@ -1169,7 +1221,7 @@ impl Connection {
         for p in acc {
             if let Parsed::Ack { error, message } = p {
                 if error != 0 {
-                    return Err(Error::Netlink(format!("{message}")));
+                    return Err(Error::Netlink(message.to_string()));
                 }
             }
         }
@@ -1252,10 +1304,13 @@ pub fn ifindex(name: &str, sysfs_root: &std::path::Path) -> Result<u32> {
     let p = sysfs_root.join(name).join("ifindex");
     let text = std::fs::read_to_string(&p)
         .map_err(|e| Error::Netlink(format!("读取 {} 失败: {e}", p.display())))?;
-    let v: u32 = text
-        .trim()
-        .parse()
-        .map_err(|_| Error::Netlink(format!("{} 内容非法: {:?}", p.display(), crate::clamp_str(&text, 32))))?;
+    let v: u32 = text.trim().parse().map_err(|_| {
+        Error::Netlink(format!(
+            "{} 内容非法: {:?}",
+            p.display(),
+            crate::clamp_str(&text, 32)
+        ))
+    })?;
     if v == 0 {
         return Err(Error::Netlink(format!("接口 {name} 的 ifindex 为 0")));
     }
@@ -1285,7 +1340,11 @@ impl FakeNetlink {
     }
 
     /// 预置内核现状：dump 就返回这些（RouteOps 需要 `&self`，因此内部用锁）。
-    pub fn with_state(rules: Vec<RuleEntry>, routes: Vec<RouteEntry>, addresses: Vec<AddrEntry>) -> FakeNetlink {
+    pub fn with_state(
+        rules: Vec<RuleEntry>,
+        routes: Vec<RouteEntry>,
+        addresses: Vec<AddrEntry>,
+    ) -> FakeNetlink {
         FakeNetlink {
             rules: Mutex::new(rules),
             routes: Mutex::new(routes),
@@ -1342,7 +1401,9 @@ impl FakeNetlink {
     }
 
     fn take_fail(&self, q: &Mutex<Vec<Option<String>>>) -> Result<()> {
-        let mut g = q.lock().map_err(|_| Error::Netlink("fake 状态锁中毒".into()))?;
+        let mut g = q
+            .lock()
+            .map_err(|_| Error::Netlink("fake 状态锁中毒".into()))?;
         if g.is_empty() {
             return Ok(());
         }
@@ -1360,7 +1421,11 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl RouteOps for FakeNetlink {
     fn dump_rules(&self, family: Family) -> Result<Vec<RuleEntry>> {
-        Ok(lock(&self.rules).iter().filter(|r| r.family == family).cloned().collect())
+        Ok(lock(&self.rules)
+            .iter()
+            .filter(|r| r.family == family)
+            .cloned()
+            .collect())
     }
 
     fn dump_routes(&self, family: Family, table: u32) -> Result<Vec<RouteEntry>> {
@@ -1372,11 +1437,18 @@ impl RouteOps for FakeNetlink {
     }
 
     fn dump_addresses(&self, family: Family) -> Result<Vec<AddrEntry>> {
-        Ok(lock(&self.addresses).iter().filter(|a| a.family == family).cloned().collect())
+        Ok(lock(&self.addresses)
+            .iter()
+            .filter(|a| a.family == family)
+            .cloned()
+            .collect())
     }
 
     fn add_rule(&self, spec: &RuleSpec) -> Result<()> {
-        self.record(format!("add_rule {:?}:prio {} fw 0x{:02x}/0x{:02x} table {}", spec.family, spec.priority, spec.fwmark, spec.fwmask, spec.table));
+        self.record(format!(
+            "add_rule {:?}:prio {} fw 0x{:02x}/0x{:02x} table {}",
+            spec.family, spec.priority, spec.fwmark, spec.fwmask, spec.table
+        ));
         self.take_fail(&self.fail_add_rule)?;
         let e = RuleEntry {
             family: spec.family,
@@ -1401,12 +1473,23 @@ impl RouteOps for FakeNetlink {
         self.record(format!("del_rule {:?}:prio {}", spec.family, spec.priority));
         self.take_fail(&self.fail_del_rule)?;
         let mut g = lock(&self.rules);
-        g.retain(|r| !(r.family == spec.family && r.priority == spec.priority && r.fwmark == Some(spec.fwmark)));
+        g.retain(|r| {
+            !(r.family == spec.family
+                && r.priority == spec.priority
+                && r.fwmark == Some(spec.fwmark))
+        });
         Ok(())
     }
 
     fn add_route(&self, spec: &RouteSpec) -> Result<()> {
-        self.record(format!("add_route {:?} table {} dst {}", spec.family, spec.table, spec.dst.map(|d| d.to_string()).unwrap_or_else(|| "default".into())));
+        self.record(format!(
+            "add_route {:?} table {} dst {}",
+            spec.family,
+            spec.table,
+            spec.dst
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "default".into())
+        ));
         self.take_fail(&self.fail_add_route)?;
         let e = RouteEntry {
             family: spec.family,
@@ -1422,7 +1505,12 @@ impl RouteOps for FakeNetlink {
             kind: spec.kind,
         };
         let mut g = lock(&self.routes);
-        g.retain(|r| !(r.family == spec.family && r.table == spec.table && r.dst == spec.dst && r.dst_len == spec.dst_len));
+        g.retain(|r| {
+            !(r.family == spec.family
+                && r.table == spec.table
+                && r.dst == spec.dst
+                && r.dst_len == spec.dst_len)
+        });
         g.push(e);
         Ok(())
     }
@@ -1431,7 +1519,12 @@ impl RouteOps for FakeNetlink {
         self.record(format!("del_route {:?} table {}", spec.family, spec.table));
         self.take_fail(&self.fail_del_route)?;
         let mut g = lock(&self.routes);
-        g.retain(|r| !(r.family == spec.family && r.table == spec.table && r.dst == spec.dst && r.dst_len == spec.dst_len));
+        g.retain(|r| {
+            !(r.family == spec.family
+                && r.table == spec.table
+                && r.dst == spec.dst
+                && r.dst_len == spec.dst_len)
+        });
         Ok(())
     }
 }
@@ -1466,7 +1559,14 @@ mod tests {
     #[test]
     fn header_sizes_are_twelve_bytes() {
         // rtmsg 与 fib_rule_hdr 都是 12 字节（末尾 u32 flags）。
-        let b = rtmsg(Family::V4, RT_TABLE_MAIN, 0, RTPROT_UNSPEC, RT_SCOPE_UNIVERSE, RTN_UNSPEC);
+        let b = rtmsg(
+            Family::V4,
+            RT_TABLE_MAIN,
+            0,
+            RTPROT_UNSPEC,
+            RT_SCOPE_UNIVERSE,
+            RTN_UNSPEC,
+        );
         assert_eq!(b.bytes().len(), 12);
         let r = fib_rule_hdr(Family::V6, 0, FR_ACT_TO_TBL);
         assert_eq!(r.bytes().len(), 12);
@@ -1570,12 +1670,21 @@ mod tests {
 
     #[test]
     fn ignores_messages_from_other_sessions() {
-        let spec = RuleSpec { family: Family::V4, priority: 1000, table: 100, fwmark: 0, fwmask: 0xff };
+        let spec = RuleSpec {
+            family: Family::V4,
+            priority: 1000,
+            table: 100,
+            fwmark: 0,
+            fwmask: 0xff,
+        };
         let m = encode_rule(RTM_NEWRULE, 11, 99, &spec, true);
         let (parsed, done, skipped) = parse_stream(RTM_NEWRULE, 12, 4242, &m).unwrap();
         assert_eq!(skipped, 1);
         assert!(!done);
-        assert!(parsed.is_empty(), "seq/pid 不匹配的消息绝不能当成自己的结果");
+        assert!(
+            parsed.is_empty(),
+            "seq/pid 不匹配的消息绝不能当成自己的结果"
+        );
     }
 
     #[test]
@@ -1605,7 +1714,13 @@ mod tests {
         assert!(describe_errno(-17).contains("EEXIST"));
         assert!(describe_errno(-1000).contains("errno"));
         let mut acc = Vec::new();
-        let r = collect(&mut acc, Parsed::Ack { error: -1, message: "EPERM".into() });
+        let r = collect(
+            &mut acc,
+            Parsed::Ack {
+                error: -1,
+                message: "EPERM".into(),
+            },
+        );
         assert!(matches!(r, Err(Error::Netlink(_))));
     }
 
@@ -1657,7 +1772,13 @@ mod tests {
     #[test]
     fn fake_netlink_replays_state() {
         let f = FakeNetlink::new();
-        let spec = RuleSpec { family: Family::V4, priority: 1000, table: 100, fwmark: 1, fwmask: 0xff };
+        let spec = RuleSpec {
+            family: Family::V4,
+            priority: 1000,
+            table: 100,
+            fwmark: 1,
+            fwmask: 0xff,
+        };
         f.add_rule(&spec).unwrap();
         assert_eq!(f.dump_rules(Family::V4).unwrap().len(), 1);
         f.del_rule(&spec).unwrap();
@@ -1672,7 +1793,10 @@ mod tests {
         std::fs::create_dir_all(dir.join("eth0")).unwrap();
         std::fs::write(dir.join("eth0/ifindex"), "3\n").unwrap();
         assert_eq!(ifindex("eth0", &dir).unwrap(), 3);
-        assert!(matches!(ifindex("eth0/../evil", &dir), Err(Error::Validate(_))));
+        assert!(matches!(
+            ifindex("eth0/../evil", &dir),
+            Err(Error::Validate(_))
+        ));
         assert!(matches!(ifindex("", &dir), Err(Error::Validate(_))));
         assert!(ifindex("missing0", &dir).is_err());
         let _ = std::fs::remove_dir_all(&dir);

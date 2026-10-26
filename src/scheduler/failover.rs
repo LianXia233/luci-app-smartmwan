@@ -182,17 +182,34 @@ impl Machine {
     /// 依据配置与线路状态决定此刻的活动线路。
     pub fn decide(&mut self, cfg: &GlobalConfig, lines: &[LineState], now_ms: u64) -> Decision {
         let order = order(cfg, lines);
-        let by_name: BTreeMap<&str, &LineState> = lines.iter().map(|l| (l.name.as_str(), l)).collect();
+        let by_name: BTreeMap<&str, &LineState> =
+            lines.iter().map(|l| (l.name.as_str(), l)).collect();
         let usable: Vec<&str> = order
             .iter()
-            .filter(|n| by_name.get(n.as_str()).map(|l| l.usable_as_active()).unwrap_or(false))
+            .filter(|n| {
+                by_name
+                    .get(n.as_str())
+                    .map(|l| l.usable_as_active())
+                    .unwrap_or(false)
+            })
             .map(|n| n.as_str())
             .collect();
 
         // 1) 强制目标优先（可用即生效）。
         if let Some(f) = self.forced.clone() {
-            if by_name.get(f.as_str()).map(|l| l.usable_as_active()).unwrap_or(false) {
-                return self.commit(Some(f.clone()), &order, now_ms, format!("强制切换到 {f}"), None, false);
+            if by_name
+                .get(f.as_str())
+                .map(|l| l.usable_as_active())
+                .unwrap_or(false)
+            {
+                return self.commit(
+                    Some(f.clone()),
+                    &order,
+                    now_ms,
+                    format!("强制切换到 {f}"),
+                    None,
+                    false,
+                );
             }
         }
 
@@ -216,14 +233,22 @@ impl Machine {
         let current_usable = self
             .active
             .as_ref()
-            .map(|a| by_name.get(a.as_str()).map(|l| l.usable_as_active()).unwrap_or(false))
+            .map(|a| {
+                by_name
+                    .get(a.as_str())
+                    .map(|l| l.usable_as_active())
+                    .unwrap_or(false)
+            })
             .unwrap_or(false);
 
         // 3) 活动线路仍然可用 —— 判断是否回切。
         if current_usable {
             let cur = self.active.clone().unwrap_or_default();
             let cur_idx = order.iter().position(|n| *n == cur).unwrap_or(usize::MAX);
-            let best_idx = order.iter().position(|n| *n == next_best).unwrap_or(usize::MAX);
+            let best_idx = order
+                .iter()
+                .position(|n| *n == next_best)
+                .unwrap_or(usize::MAX);
             if best_idx >= cur_idx {
                 self.failback = None;
                 // 顺序里排在当前线路之前的线路此刻不可用：它们正是「将来要回切回去」
@@ -250,13 +275,19 @@ impl Machine {
             let held = now_ms.saturating_sub(cand.state_since_ms);
             let mut missing: Vec<String> = Vec::new();
             if !cand.eligible_for_failback() {
-                missing.push(format!("状态 {} 未达 HEALTHY 或预热未结束", cand.state.as_str()));
+                missing.push(format!(
+                    "状态 {} 未达 HEALTHY 或预热未结束",
+                    cand.state.as_str()
+                ));
             }
             if held < cfg.failback_delay_ms {
                 missing.push(format!("稳定时间 {held}ms < {}ms", cfg.failback_delay_ms));
             }
             if cand.consec_ok < cfg.failback_success_threshold {
-                missing.push(format!("连续成功 {} < {}", cand.consec_ok, cfg.failback_success_threshold));
+                missing.push(format!(
+                    "连续成功 {} < {}",
+                    cand.consec_ok, cfg.failback_success_threshold
+                ));
             }
             if !interval_elapsed(self.last_switch_ms, now_ms, cfg.min_switch_interval_ms) {
                 missing.push(format!(
@@ -363,11 +394,17 @@ impl Machine {
 /// 顺序表中排在 `upto_idx` 之前的线路为什么还不能接回去（逐条原因）。
 ///
 /// 返回 `None` 表示前面没有线路，或前面的线路都没有可解释的障碍。
-fn waiting_for_higher(order: &[String], by_name: &BTreeMap<&str, &LineState>, upto_idx: usize) -> Option<(String, String)> {
+fn waiting_for_higher(
+    order: &[String],
+    by_name: &BTreeMap<&str, &LineState>,
+    upto_idx: usize,
+) -> Option<(String, String)> {
     let mut names: Vec<String> = Vec::new();
     let mut reasons: Vec<String> = Vec::new();
     for n in order.iter().take(upto_idx) {
-        let Some(l) = by_name.get(n.as_str()) else { continue };
+        let Some(l) = by_name.get(n.as_str()) else {
+            continue;
+        };
         if l.usable_as_active() {
             continue;
         }
@@ -412,7 +449,12 @@ pub fn order(cfg: &GlobalConfig, lines: &[LineState]) -> Vec<String> {
     }
     // 3) 剩余线路：启用者优先，其次按槽位（= role/priority/name 的既定顺序）。
     let mut rest: Vec<&LineState> = lines.iter().filter(|l| !out.contains(&l.name)).collect();
-    rest.sort_by(|a, b| a.enabled.cmp(&b.enabled).reverse().then_with(|| a.slot.cmp(&b.slot)));
+    rest.sort_by(|a, b| {
+        a.enabled
+            .cmp(&b.enabled)
+            .reverse()
+            .then_with(|| a.slot.cmp(&b.slot))
+    });
     for l in rest {
         push_unique(&mut out, lines, &l.name);
     }
@@ -483,11 +525,19 @@ mod tests {
         let mut c2 = cfg();
         c2.primary = "wan2".into();
         c2.backup_order = vec!["wan1".into()];
-        assert_eq!(order(&c2, &lines()), vec!["wan2", "wan1", "wan3"], "未列出的按槽位补齐");
+        assert_eq!(
+            order(&c2, &lines()),
+            vec!["wan2", "wan1", "wan3"],
+            "未列出的按槽位补齐"
+        );
         let mut c3 = cfg();
         c3.primary = "nonexistent".into();
         // primary 写了不存在的名字：该条目被忽略，显式 backup_order 仍然优先。
-        assert_eq!(order(&c3, &lines()), vec!["wan2", "wan3", "wan1"], "不存在的名字不能挤掉真实线路");
+        assert_eq!(
+            order(&c3, &lines()),
+            vec!["wan2", "wan3", "wan1"],
+            "不存在的名字不能挤掉真实线路"
+        );
         assert_eq!(missing_from_order(&c3, &lines()), Vec::<String>::new());
     }
 
@@ -507,10 +557,17 @@ mod tests {
     #[test]
     fn unknown_is_never_active() {
         let c = cfg();
-        let ls = vec![line("wan1", 1, State::Unknown), line("wan2", 2, State::Healthy)];
+        let ls = vec![
+            line("wan1", 1, State::Unknown),
+            line("wan2", 2, State::Healthy),
+        ];
         let mut m = Machine::new();
         let d = m.decide(&c, &ls, 1000);
-        assert_eq!(d.active.as_deref(), Some("wan2"), "未验证的主线路不能接流量");
+        assert_eq!(
+            d.active.as_deref(),
+            Some("wan2"),
+            "未验证的主线路不能接流量"
+        );
         assert!(d.reason.contains("首次选定"), "{}", d.reason);
     }
 
@@ -518,18 +575,34 @@ mod tests {
     fn failover_walks_down_the_order_and_records_reasons() {
         let c = cfg();
         let mut m = Machine::new();
-        let ls = vec![line("wan1", 1, State::Failed), line("wan2", 2, State::Healthy), line("wan3", 3, State::Healthy)];
+        let ls = vec![
+            line("wan1", 1, State::Failed),
+            line("wan2", 2, State::Healthy),
+            line("wan3", 3, State::Healthy),
+        ];
         let d = m.decide(&c, &ls, 1000);
         assert_eq!(d.active.as_deref(), Some("wan2"));
         assert!(d.changed);
         assert!(d.reason.contains("不可用"), "{}", d.reason);
-        assert_eq!(d.standby(&ls), vec!["wan3".to_string()], "待命列表只含可用且更靠后的线路");
+        assert_eq!(
+            d.standby(&ls),
+            vec!["wan3".to_string()],
+            "待命列表只含可用且更靠后的线路"
+        );
 
-        let ls2 = vec![line("wan1", 1, State::Failed), line("wan2", 2, State::Failed), line("wan3", 3, State::Degraded)];
+        let ls2 = vec![
+            line("wan1", 1, State::Failed),
+            line("wan2", 2, State::Failed),
+            line("wan3", 3, State::Degraded),
+        ];
         let d2 = m.decide(&c, &ls2, 2000);
         assert_eq!(d2.active.as_deref(), Some("wan3"), "降级线路仍算可用");
 
-        let ls3 = vec![line("wan1", 1, State::Failed), line("wan2", 2, State::Failed), line("wan3", 3, State::Recovering)];
+        let ls3 = vec![
+            line("wan1", 1, State::Failed),
+            line("wan2", 2, State::Failed),
+            line("wan3", 3, State::Recovering),
+        ];
         let d3 = m.decide(&c, &ls3, 3000);
         assert_eq!(d3.active, None, "没有可用线路时必须停止分流");
         assert!(d3.all_dead);
@@ -547,56 +620,108 @@ mod tests {
         let c = cfg();
         let mut m = Machine::new();
         let bad = line("wan1", 1, State::Failed);
-        let ls = vec![bad, line("wan2", 2, State::Healthy), line("wan3", 3, State::Healthy)];
+        let ls = vec![
+            bad,
+            line("wan2", 2, State::Healthy),
+            line("wan3", 3, State::Healthy),
+        ];
         m.decide(&c, &ls, 1000);
         assert_eq!(m.active(), Some("wan2"));
 
         // ①稳定时间不足
         let mut good = line("wan1", 1, State::Healthy);
         good.state_since_ms = 40_000;
-        let ls2 = vec![good.clone(), line("wan2", 2, State::Healthy), line("wan3", 3, State::Healthy)];
+        let ls2 = vec![
+            good.clone(),
+            line("wan2", 2, State::Healthy),
+            line("wan3", 3, State::Healthy),
+        ];
         let d = m.decide(&c, &ls2, 41_000);
         assert_eq!(d.active.as_deref(), Some("wan2"));
-        assert!(d.waiting.as_ref().unwrap().1.contains("稳定时间"), "{:?}", d.waiting);
+        assert!(
+            d.waiting.as_ref().unwrap().1.contains("稳定时间"),
+            "{:?}",
+            d.waiting
+        );
 
         // ②连续成功不足
         let mut g2 = line("wan1", 1, State::Healthy);
         g2.consec_ok = 2;
-        let ls3 = vec![g2, line("wan2", 2, State::Healthy), line("wan3", 3, State::Healthy)];
+        let ls3 = vec![
+            g2,
+            line("wan2", 2, State::Healthy),
+            line("wan3", 3, State::Healthy),
+        ];
         let d = m.decide(&c, &ls3, 100_000);
         assert_eq!(d.active.as_deref(), Some("wan2"));
-        assert!(d.waiting.as_ref().unwrap().1.contains("连续成功"), "{:?}", d.waiting);
+        assert!(
+            d.waiting.as_ref().unwrap().1.contains("连续成功"),
+            "{:?}",
+            d.waiting
+        );
 
         // ③预热未结束（状态为 RECOVERING）
         let mut g3 = line("wan1", 1, State::Recovering);
         g3.warmup_remaining_ms = 4_000;
-        let ls4 = vec![g3, line("wan2", 2, State::Healthy), line("wan3", 3, State::Healthy)];
+        let ls4 = vec![
+            g3,
+            line("wan2", 2, State::Healthy),
+            line("wan3", 3, State::Healthy),
+        ];
         let d = m.decide(&c, &ls4, 200_000);
         assert_eq!(d.active.as_deref(), Some("wan2"));
-        assert!(d.waiting.as_ref().unwrap().1.contains("预热"), "{:?}", d.waiting);
+        assert!(
+            d.waiting.as_ref().unwrap().1.contains("预热"),
+            "{:?}",
+            d.waiting
+        );
 
         // ④最小切换间隔不足：刚刚切过一次
         let mut fresh = Machine::new();
-        let ls5 = vec![line("wan1", 1, State::Healthy), line("wan2", 2, State::Healthy), line("wan3", 3, State::Healthy)];
+        let ls5 = vec![
+            line("wan1", 1, State::Healthy),
+            line("wan2", 2, State::Healthy),
+            line("wan3", 3, State::Healthy),
+        ];
         let d = fresh.decide(&c, &ls5, 1_000);
         assert_eq!(d.active.as_deref(), Some("wan1"));
         // 主线路故意挂掉再回来，制造「刚切换过」的场景
-        let down = vec![line("wan1", 1, State::Failed), line("wan2", 2, State::Healthy), line("wan3", 3, State::Healthy)];
+        let down = vec![
+            line("wan1", 1, State::Failed),
+            line("wan2", 2, State::Healthy),
+            line("wan3", 3, State::Healthy),
+        ];
         fresh.decide(&c, &down, 2_000);
         assert_eq!(fresh.active(), Some("wan2"));
         let mut back = line("wan1", 1, State::Healthy);
         back.state_since_ms = 2_500;
-        let up = vec![back, line("wan2", 2, State::Healthy), line("wan3", 3, State::Healthy)];
+        let up = vec![
+            back,
+            line("wan2", 2, State::Healthy),
+            line("wan3", 3, State::Healthy),
+        ];
         let d = fresh.decide(&c, &up, 3_000);
         assert_eq!(d.active.as_deref(), Some("wan2"));
-        assert!(d.waiting.as_ref().unwrap().1.contains("距上次切换"), "{:?}", d.waiting);
+        assert!(
+            d.waiting.as_ref().unwrap().1.contains("距上次切换"),
+            "{:?}",
+            d.waiting
+        );
 
         // 四条都满足：首次只记一次确认，第二次才真切
         let mut ok = line("wan1", 1, State::Healthy);
         ok.state_since_ms = 1_000;
-        let ls6 = vec![ok, line("wan2", 2, State::Healthy), line("wan3", 3, State::Healthy)];
+        let ls6 = vec![
+            ok,
+            line("wan2", 2, State::Healthy),
+            line("wan3", 3, State::Healthy),
+        ];
         let d = m.decide(&c, &ls6, 300_000);
-        assert_eq!(d.active.as_deref(), Some("wan2"), "首次满足只记确认，不立刻切换");
+        assert_eq!(
+            d.active.as_deref(),
+            Some("wan2"),
+            "首次满足只记确认，不立刻切换"
+        );
         assert!(d.reason.contains("二次确认"), "{}", d.reason);
         let d2 = m.decide(&c, &ls6, 301_000);
         assert_eq!(d2.active.as_deref(), Some("wan1"), "二次确认后回切");
@@ -612,17 +737,27 @@ mod tests {
         let mut c = cfg();
         c.failback = Failback::Manual;
         let mut m = Machine::new();
-        let ls = vec![line("wan1", 1, State::Failed), line("wan2", 2, State::Healthy)];
+        let ls = vec![
+            line("wan1", 1, State::Failed),
+            line("wan2", 2, State::Healthy),
+        ];
         m.decide(&c, &ls, 1000);
         assert_eq!(m.active(), Some("wan2"));
-        let good = vec![line("wan1", 1, State::Healthy), line("wan2", 2, State::Healthy)];
+        let good = vec![
+            line("wan1", 1, State::Healthy),
+            line("wan2", 2, State::Healthy),
+        ];
         for t in 10..40u64 {
             let d = m.decide(&c, &good, t * 10_000);
             assert_eq!(d.active.as_deref(), Some("wan2"), "手动模式绝不自动回切");
         }
         let d = m.decide(&c, &good, 500_000);
         assert!(d.reason.contains("手动"), "{}", d.reason);
-        assert!(d.waiting.as_ref().unwrap().1.contains("manual"), "{:?}", d.waiting);
+        assert!(
+            d.waiting.as_ref().unwrap().1.contains("manual"),
+            "{:?}",
+            d.waiting
+        );
         m.force("wan1");
         let d2 = m.decide(&c, &good, 501_000);
         assert_eq!(d2.active.as_deref(), Some("wan1"));
@@ -633,7 +768,10 @@ mod tests {
     fn forced_target_waits_until_it_becomes_usable() {
         let c = cfg();
         let mut m = Machine::new();
-        let ls = vec![line("wan1", 1, State::Healthy), line("wan2", 2, State::Healthy)];
+        let ls = vec![
+            line("wan1", 1, State::Healthy),
+            line("wan2", 2, State::Healthy),
+        ];
         m.decide(&c, &ls, 1000);
         m.force("wan3");
         let with_dead = vec![
@@ -642,7 +780,11 @@ mod tests {
             line("wan3", 3, State::Failed),
         ];
         let d = m.decide(&c, &with_dead, 2000);
-        assert_eq!(d.active.as_deref(), Some("wan1"), "强制目标不可用时不能硬切，也不能丢弃指令");
+        assert_eq!(
+            d.active.as_deref(),
+            Some("wan1"),
+            "强制目标不可用时不能硬切，也不能丢弃指令"
+        );
         assert_eq!(m.forced(), Some("wan3"));
         let with_ok = vec![
             line("wan1", 1, State::Healthy),
@@ -653,7 +795,11 @@ mod tests {
         assert_eq!(d2.active.as_deref(), Some("wan3"), "强制目标恢复后立刻生效");
         m.release_forced();
         let d3 = m.decide(&c, &with_ok, 4000);
-        assert_eq!(d3.active.as_deref(), Some("wan3"), "取消强制后保持现状，靠回切条件再决定");
+        assert_eq!(
+            d3.active.as_deref(),
+            Some("wan3"),
+            "取消强制后保持现状，靠回切条件再决定"
+        );
         assert!(d3.waiting.is_some() || d3.reason.contains("保持"), "{d3:?}");
     }
 
@@ -671,8 +817,19 @@ mod tests {
 
         // 强制到一个根本不存在的线路：必须保持原状而不是崩溃
         m.force("wan404");
-        let d3 = m.decide(&c, &[line("wan1", 1, State::Healthy), line("wan2", 2, State::Healthy)], 3000);
-        assert_eq!(d3.active.as_deref(), Some("wan2"), "不存在的目标不能成为活动线路");
+        let d3 = m.decide(
+            &c,
+            &[
+                line("wan1", 1, State::Healthy),
+                line("wan2", 2, State::Healthy),
+            ],
+            3000,
+        );
+        assert_eq!(
+            d3.active.as_deref(),
+            Some("wan2"),
+            "不存在的目标不能成为活动线路"
+        );
     }
 
     #[test]
@@ -700,9 +857,16 @@ mod tests {
         let c = cfg();
         let mut m = Machine::new();
         m.decide(&c, &lines(), 1000);
-        let rest = vec![line("wan2", 2, State::Healthy), line("wan3", 3, State::Healthy)];
+        let rest = vec![
+            line("wan2", 2, State::Healthy),
+            line("wan3", 3, State::Healthy),
+        ];
         let d = m.decide(&c, &rest, 1000);
-        assert_eq!(d.active.as_deref(), Some("wan2"), "配置里删掉主线路后必须重选");
+        assert_eq!(
+            d.active.as_deref(),
+            Some("wan2"),
+            "配置里删掉主线路后必须重选"
+        );
         assert!(d.reason.contains("已从配置中消失"), "{}", d.reason);
     }
 
@@ -715,10 +879,19 @@ mod tests {
             line("wan5", 5, State::Healthy),
             line("wan1", 1, State::Healthy),
             line("wan2", 2, State::Healthy),
-            LineState { name: "down".into(), slot: 9, enabled: false, ..line("down", 9, State::Failed) },
+            LineState {
+                name: "down".into(),
+                slot: 9,
+                enabled: false,
+                ..line("down", 9, State::Failed)
+            },
         ];
         let o = order(&c, &extra);
-        assert_eq!(o, vec!["wan1", "wan2", "wan5", "down"], "启用者优先，停用线路仍列出但排在后面");
+        assert_eq!(
+            o,
+            vec!["wan1", "wan2", "wan5", "down"],
+            "启用者优先，停用线路仍列出但排在后面"
+        );
         assert_eq!(missing_from_order(&c, &extra), Vec::<String>::new());
     }
 }

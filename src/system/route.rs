@@ -38,12 +38,12 @@ pub const RULE_PRIO_BASE: u32 = 1000;
 pub const RULE_PRIO_SPAN: u32 = marks::MAX_WANS as u32;
 
 pub fn is_our_priority(p: u32) -> bool {
-    p >= RULE_PRIO_BASE && p < RULE_PRIO_BASE + RULE_PRIO_SPAN
+    (RULE_PRIO_BASE..RULE_PRIO_BASE + RULE_PRIO_SPAN).contains(&p)
 }
 
 /// 槽位 → 规则优先级。槽位从 1 开始，因此 1 号线路用区间起点。
 pub fn prio_for_slot(slot: u8) -> u32 {
-    assert!(slot >= 1 && slot <= marks::MAX_WANS, "槽位越界 {slot}");
+    assert!((1..=marks::MAX_WANS).contains(&slot), "槽位越界 {slot}");
     RULE_PRIO_BASE + (slot as u32) - 1
 }
 
@@ -136,11 +136,7 @@ impl Diff {
 ///
 /// `families` 决定是否为 IPv6 安装对象；关闭 IPv6 时**必须**仍然保证
 /// v6 流量走 main 表（不装标记规则即天然如此），而不是「装了规则但没有路由」。
-pub fn plan(
-    targets: &[WanTarget],
-    mirror: &MirrorSet,
-    families: &[Family],
-) -> Result<Desired> {
+pub fn plan(targets: &[WanTarget], mirror: &MirrorSet, families: &[Family]) -> Result<Desired> {
     if targets.is_empty() {
         return Ok(Desired::default());
     }
@@ -148,7 +144,10 @@ pub fn plan(
     let mut d = Desired::default();
     for t in targets {
         if t.slot == 0 || t.slot > marks::MAX_WANS {
-            return Err(Error::Config(format!("线路 {} 的槽位 {} 非法", t.name, t.slot)));
+            return Err(Error::Config(format!(
+                "线路 {} 的槽位 {} 非法",
+                t.name, t.slot
+            )));
         }
         if seen_slots.contains(&t.slot) {
             return Err(Error::Config(format!("槽位 {} 被重复使用", t.slot)));
@@ -176,8 +175,12 @@ pub fn plan(
             // 有网关走网关；点对点蜂窝链路（`default dev wwan0 scope link`）没有网关，
             // 就装同样形式的默认路由，绝不编造一个网关地址。
             match t.gw4 {
-                Some(gw) => d.routes.push(RouteSpec::default_v4(table, gw, t.ifindex, t.src4)),
-                None => d.routes.push(RouteSpec::default_dev(table, t.ifindex, t.src4)),
+                Some(gw) => d
+                    .routes
+                    .push(RouteSpec::default_v4(table, gw, t.ifindex, t.src4)),
+                None => d
+                    .routes
+                    .push(RouteSpec::default_dev(table, t.ifindex, t.src4)),
             }
         }
         if has_v6 {
@@ -213,7 +216,11 @@ pub fn plan(
                 family: Family::of(*addr),
                 table,
                 dst: Some(*addr),
-                dst_len: if Family::of(*addr) == Family::V4 { 32 } else { 128 },
+                dst_len: if Family::of(*addr) == Family::V4 {
+                    32
+                } else {
+                    128
+                },
                 gateway: None,
                 // 本机地址必须挂在它真正所属的接口上：把 br-lan 的地址写成
                 // “从 wwan0 出”会让内核校验失败，也会让排查时被误导。
@@ -315,7 +322,10 @@ pub fn reconcile(
         if !have {
             // 同优先级是否已被别人的规则占用？占用时不能盲装（会产生
             // 两条同优先级规则，命中顺序变成插入顺序，行为不可预测）。
-            if let Some(taken) = actual_rules.iter().find(|r| r.family == want.family && r.priority == want.priority) {
+            if let Some(taken) = actual_rules
+                .iter()
+                .find(|r| r.family == want.family && r.priority == want.priority)
+            {
                 diff.conflicts.push(Issue {
                     severity: Severity::Error,
                     path: format!("route.rule.{}.{}", want.family.as_str(), want.priority),
@@ -514,7 +524,9 @@ impl<'a> Applier<'a> {
     /// 运维人员不需要翻日志就能知道内核现在是什么状态。
     pub fn apply(&self, diff: &Diff) -> Result<Vec<Undo>> {
         if let Some(msg) = diff.blocking() {
-            return Err(Error::Validate(format!("存在阻塞性冲突，已拒绝提交：{msg}")));
+            return Err(Error::Validate(format!(
+                "存在阻塞性冲突，已拒绝提交：{msg}"
+            )));
         }
         let mut undo: Vec<Undo> = Vec::new();
         if let Err(e) = self.do_apply(diff, &mut undo) {
@@ -571,9 +583,13 @@ impl<'a> Applier<'a> {
             };
             if let Err(e) = r {
                 let desc = match &u {
-                    Undo::InstalledRule(s) => format!("删除已安装规则 prio {} 失败: {e}", s.priority),
+                    Undo::InstalledRule(s) => {
+                        format!("删除已安装规则 prio {} 失败: {e}", s.priority)
+                    }
                     Undo::RemovedRule(s) => format!("恢复被删除规则 prio {} 失败: {e}", s.priority),
-                    Undo::InstalledRoute(s) => format!("删除已安装路由 table {} 失败: {e}", s.table),
+                    Undo::InstalledRoute(s) => {
+                        format!("删除已安装路由 table {} 失败: {e}", s.table)
+                    }
                     Undo::RemovedRoute(s) => format!("恢复被删除路由 table {} 失败: {e}", s.table),
                 };
                 leftovers.push(desc);
@@ -595,7 +611,11 @@ impl<'a> Applier<'a> {
                 let table = marks::table_of(slot);
                 match self.ops.dump_routes(f, table) {
                     Ok(v) => actual_routes.extend(v),
-                    Err(e) => return Err(Error::Rollback(format!("校验时无法 dump 路由表 {table}: {e}"))),
+                    Err(e) => {
+                        return Err(Error::Rollback(format!(
+                            "校验时无法 dump 路由表 {table}: {e}"
+                        )))
+                    }
                 }
             }
         }
@@ -621,8 +641,8 @@ impl<'a> Applier<'a> {
 mod tests {
     use super::*;
     use crate::system::netlink::{
-        FakeNetlink, FR_ACT_TO_TBL, OUR_RTPROT, RT_SCOPE_HOST, RT_SCOPE_LINK, RTN_LOCAL, RTN_UNICAST,
-        RTPROT_KERNEL,
+        FakeNetlink, FR_ACT_TO_TBL, OUR_RTPROT, RTN_LOCAL, RTN_UNICAST, RTPROT_KERNEL,
+        RT_SCOPE_HOST, RT_SCOPE_LINK,
     };
     use std::net::Ipv4Addr;
 
@@ -674,7 +694,10 @@ mod tests {
 
     #[test]
     fn plan_creates_one_rule_per_wan_and_default_route() {
-        let ts = vec![target(1, "wan1", "eth1", "10.0.0.1"), target(2, "wan2", "ppp0", "10.1.1.1")];
+        let ts = vec![
+            target(1, "wan1", "eth1", "10.0.0.1"),
+            target(2, "wan2", "ppp0", "10.1.1.1"),
+        ];
         let d = plan(&ts, &MirrorSet::default(), &[Family::V4]).unwrap();
         assert_eq!(d.rules.len(), 2);
         assert_eq!(d.routes.len(), 2);
@@ -695,9 +718,15 @@ mod tests {
 
     #[test]
     fn plan_rejects_duplicate_and_out_of_range_slots() {
-        let ts = vec![target(1, "a", "eth1", "10.0.0.1"), target(1, "b", "eth2", "10.0.1.1")];
+        let ts = vec![
+            target(1, "a", "eth1", "10.0.0.1"),
+            target(1, "b", "eth2", "10.0.1.1"),
+        ];
         assert!(plan(&ts, &MirrorSet::default(), &[Family::V4]).is_err());
-        let bad = vec![WanTarget { slot: 25, ..target(1, "a", "eth1", "10.0.0.1") }];
+        let bad = vec![WanTarget {
+            slot: 25,
+            ..target(1, "a", "eth1", "10.0.0.1")
+        }];
         assert!(plan(&bad, &MirrorSet::default(), &[Family::V4]).is_err());
     }
 
@@ -730,7 +759,11 @@ mod tests {
             .collect();
         let rules: Vec<RuleEntry> = vec![our_rule(1, Family::V4)];
         let settled = reconcile(&rules, &routes, &d);
-        assert!(settled.is_empty(), "收敛后不应产生二次改动：{:?}", settled.summary());
+        assert!(
+            settled.is_empty(),
+            "收敛后不应产生二次改动：{:?}",
+            settled.summary()
+        );
     }
 
     #[test]
@@ -769,7 +802,10 @@ mod tests {
         assert_eq!(diff.add_routes.len(), 1);
         assert_eq!(diff.conflicts.len(), 1);
         assert_eq!(diff.conflicts[0].severity, Severity::Warning);
-        assert!(diff.conflicts[0].message.contains("dhcp") || diff.conflicts[0].message.contains("协议 16"));
+        assert!(
+            diff.conflicts[0].message.contains("dhcp")
+                || diff.conflicts[0].message.contains("协议 16")
+        );
     }
 
     #[test]
@@ -826,8 +862,20 @@ mod tests {
         }
         let diff = Diff {
             add_rules: vec![
-                RuleSpec { family: Family::V4, priority: 1000, table: 101, fwmark: 1, fwmask: 0xff },
-                RuleSpec { family: Family::V4, priority: 1001, table: 102, fwmark: 2, fwmask: 0xff },
+                RuleSpec {
+                    family: Family::V4,
+                    priority: 1000,
+                    table: 101,
+                    fwmark: 1,
+                    fwmask: 0xff,
+                },
+                RuleSpec {
+                    family: Family::V4,
+                    priority: 1001,
+                    table: 102,
+                    fwmark: 2,
+                    fwmask: 0xff,
+                },
             ],
             add_routes: vec![RouteSpec::default_v4(
                 101,
@@ -840,7 +888,11 @@ mod tests {
         let ap = Applier::new(&fake);
         let err = ap.apply(&diff).unwrap_err();
         assert!(matches!(err, Error::Netlink(_)));
-        assert!(fake.rule_list().is_empty(), "回滚后不应留下任何规则，实际 {:?}", fake.logged());
+        assert!(
+            fake.rule_list().is_empty(),
+            "回滚后不应留下任何规则，实际 {:?}",
+            fake.logged()
+        );
         assert!(fake.route_list().is_empty(), "回滚后不应留下任何路由");
     }
 
@@ -854,7 +906,13 @@ mod tests {
                 message: "优先级冲突".into(),
                 hint: None,
             }],
-            add_rules: vec![RuleSpec { family: Family::V4, priority: 1000, table: 101, fwmark: 1, fwmask: 0xff }],
+            add_rules: vec![RuleSpec {
+                family: Family::V4,
+                priority: 1000,
+                table: 101,
+                fwmark: 1,
+                fwmask: 0xff,
+            }],
             ..Diff::default()
         };
         let ap = Applier::new(&fake);
@@ -943,12 +1001,18 @@ mod tests {
             local: vec![(v4("192.168.1.1"), 1)],
             connected: vec![(v4("192.168.1.0"), 24, 6)],
         };
-        let ts = vec![target(1, "wan1", "eth1", "10.0.0.1"), target(2, "wan2", "eth2", "10.1.0.1")];
+        let ts = vec![
+            target(1, "wan1", "eth1", "10.0.0.1"),
+            target(2, "wan2", "eth2", "10.1.0.1"),
+        ];
         let d = plan(&ts, &mirror, &[Family::V4]).unwrap();
         // 2 条默认路由 + 2 张表各 2 条镜像 = 6
         assert_eq!(d.routes.len(), 6);
         assert_eq!(d.routes.iter().filter(|r| r.kind == RTN_LOCAL).count(), 2);
-        assert!(!d.routes.iter().any(|r| r.dst_len == 0 && r.kind == RTN_LOCAL));
+        assert!(!d
+            .routes
+            .iter()
+            .any(|r| r.dst_len == 0 && r.kind == RTN_LOCAL));
     }
 
     #[test]
@@ -956,10 +1020,25 @@ mod tests {
         // 回滚不是「清空」：被我们删掉的旧规则必须装回去，否则失败的 apply
         // 会把本来正常工作的线路一起弄挂。
         let fake = FakeNetlink::default();
-        let old = RuleSpec { family: Family::V4, priority: prio_for_slot(1), table: 101, fwmark: 1, fwmask: 0xff };
+        let old = RuleSpec {
+            family: Family::V4,
+            priority: prio_for_slot(1),
+            table: 101,
+            fwmark: 1,
+            fwmask: 0xff,
+        };
         fake.add_rule(&old).unwrap();
-        fake.fail_add_rule.lock().unwrap().push(Some("EPERM：权限不足".into()));
-        let new = RuleSpec { family: Family::V4, priority: prio_for_slot(2), table: 102, fwmark: 2, fwmask: 0xff };
+        fake.fail_add_rule
+            .lock()
+            .unwrap()
+            .push(Some("EPERM：权限不足".into()));
+        let new = RuleSpec {
+            family: Family::V4,
+            priority: prio_for_slot(2),
+            table: 102,
+            fwmark: 2,
+            fwmask: 0xff,
+        };
         let diff = Diff {
             del_rules: vec![old.clone()],
             add_rules: vec![new.clone()],
@@ -968,24 +1047,57 @@ mod tests {
         let ap = Applier::new(&fake);
         assert!(ap.apply(&diff).is_err());
         let now = fake.dump_rules(Family::V4).unwrap();
-        assert!(now.iter().any(|r| r.priority == old.priority), "旧规则要恢复");
-        assert!(!now.iter().any(|r| r.priority == new.priority), "半成品新规则要清掉");
+        assert!(
+            now.iter().any(|r| r.priority == old.priority),
+            "旧规则要恢复"
+        );
+        assert!(
+            !now.iter().any(|r| r.priority == new.priority),
+            "半成品新规则要清掉"
+        );
     }
 
     #[test]
     fn rollback_failures_are_surfaced_not_swallowed() {
         // 第二个 add 失败 → 回滚删第一个；若回滚删除也失败，必须把遗留问题写进错误。
         let fake = FakeNetlink::default();
-        let a = RuleSpec { family: Family::V4, priority: prio_for_slot(1), table: 101, fwmark: 1, fwmask: 0xff };
-        let b = RuleSpec { family: Family::V4, priority: prio_for_slot(2), table: 102, fwmark: 2, fwmask: 0xff };
-        fake.fail_add_rule.lock().unwrap().extend([None, Some("ENOBUFS".into())]);
-        fake.fail_del_rule.lock().unwrap().push(Some("EPERM".into()));
-        let diff = Diff { add_rules: vec![a.clone(), b], ..Diff::default() };
+        let a = RuleSpec {
+            family: Family::V4,
+            priority: prio_for_slot(1),
+            table: 101,
+            fwmark: 1,
+            fwmask: 0xff,
+        };
+        let b = RuleSpec {
+            family: Family::V4,
+            priority: prio_for_slot(2),
+            table: 102,
+            fwmark: 2,
+            fwmask: 0xff,
+        };
+        fake.fail_add_rule
+            .lock()
+            .unwrap()
+            .extend([None, Some("ENOBUFS".into())]);
+        fake.fail_del_rule
+            .lock()
+            .unwrap()
+            .push(Some("EPERM".into()));
+        let diff = Diff {
+            add_rules: vec![a.clone(), b],
+            ..Diff::default()
+        };
         let err = Applier::new(&fake).apply(&diff).unwrap_err();
-        assert!(matches!(err, Error::Rollback(_)), "回滚有遗留问题时应报 Rollback，实际 {err:?}");
+        assert!(
+            matches!(err, Error::Rollback(_)),
+            "回滚有遗留问题时应报 Rollback，实际 {err:?}"
+        );
         assert!(err.to_string().contains("遗留问题"));
         // 空 diff 不应触碰内核
-        assert!(Applier::new(&FakeNetlink::default()).apply(&Diff::default()).unwrap().is_empty());
+        assert!(Applier::new(&FakeNetlink::default())
+            .apply(&Diff::default())
+            .unwrap()
+            .is_empty());
         assert_eq!(a.priority, prio_for_slot(1));
     }
 
@@ -1020,7 +1132,10 @@ mod tests {
         t.gw6 = None;
         t.link_default = false;
         let d = plan(&[t], &MirrorSet::default(), &[Family::V4, Family::V6]).unwrap();
-        assert!(d.rules.is_empty() && d.routes.is_empty(), "无网关不得留下指向空表的规则");
+        assert!(
+            d.rules.is_empty() && d.routes.is_empty(),
+            "无网关不得留下指向空表的规则"
+        );
     }
 
     #[test]

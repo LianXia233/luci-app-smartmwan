@@ -99,7 +99,10 @@ fn safe_name(kind: &str, raw: &str, max: usize) -> Result<String> {
         return Err(Error::Config(format!("{kind} 名称为空")));
     }
     if s.len() > max {
-        return Err(Error::Config(format!("{kind} 名称过长（>{max}）：{}", s.len())));
+        return Err(Error::Config(format!(
+            "{kind} 名称过长（>{max}）：{}",
+            s.len()
+        )));
     }
     if s.starts_with('-') {
         return Err(Error::Config(format!("{kind} 名称不能以 '-' 开头：{s}")));
@@ -379,7 +382,12 @@ fn set_block(name: &str, ty: &str, extra: &[String], elements: &[String]) -> Str
 
 /// 算法 → 哈希表达式（按族）。返回 `(选择器前缀, 表达式)`；
 /// 返回 `None` 表示该算法不由 nft 桶规则实现（见 `build` 里的能力门控）。
-fn hash_expr(alg: Algorithm, family: Family, ports: bool, caps: &Capabilities) -> Option<(String, String)> {
+fn hash_expr(
+    alg: Algorithm,
+    family: Family,
+    ports: bool,
+    caps: &Capabilities,
+) -> Option<(String, String)> {
     use Family::*;
     let (saddr, daddr, proto) = match (family, ports) {
         (V4, true) => ("ip saddr", "ip daddr", ""),
@@ -397,10 +405,13 @@ fn hash_expr(alg: Algorithm, family: Family, ports: bool, caps: &Capabilities) -
         String::new()
     };
     let expr = match alg {
-        Algorithm::SrcIp => format!("{saddr}"),
+        Algorithm::SrcIp => saddr.to_string(),
         Algorithm::SrcIpSrcPort if ports => format!("{saddr} . th sport"),
-        Algorithm::SrcIpSrcPort => format!("{saddr}"),
-        Algorithm::SrcIpDstIp | Algorithm::LeastNewConnections | Algorithm::LeastTraffic | Algorithm::WeightedHash => {
+        Algorithm::SrcIpSrcPort => saddr.to_string(),
+        Algorithm::SrcIpDstIp
+        | Algorithm::LeastNewConnections
+        | Algorithm::LeastTraffic
+        | Algorithm::WeightedHash => {
             format!("{saddr} . {daddr}")
         }
         Algorithm::SrcIpDstIpDstPort if ports => format!("{saddr} . {daddr} . th dport"),
@@ -417,17 +428,18 @@ fn hash_expr(alg: Algorithm, family: Family, ports: bool, caps: &Capabilities) -
 }
 
 /// 生成桶规则体（含选择器与 verdict），供 `build` 与热替换共用。
+///
+/// 参数收成一个 `&Input` 而不是 9 个位置参数：这些值本来就同源，拆开传既容易在调用点
+/// 写错顺序（`gen` 与 `seed` 同为整数，换位不会报错），也让签名难以演进。
 fn bucket_rule(
-    alg: Algorithm,
+    input: &Input<'_>,
     family: Family,
     chain: &'static str,
     tag: &str,
-    buckets: u16,
-    map: &[u8],
-    gen: u8,
-    seed: u32,
-    caps: &Capabilities,
 ) -> Option<BucketBody> {
+    let alg = input.algorithm;
+    let caps = input.caps;
+    let buckets = input.buckets;
     let ports = matches!(
         alg,
         Algorithm::SrcIpSrcPort | Algorithm::SrcIpDstIpDstPort | Algorithm::FullFiveTuple
@@ -435,18 +447,18 @@ fn bucket_rule(
     // 端口参与的算法：先出「有端口」的规则，未命中（其它协议）再落到无端口版本。
     let (sel, expr) = hash_expr(alg, family, ports && caps.th_payload, caps)?;
     let mut map_txt = String::from("{ ");
-    for b in 0..buckets as usize {
-        let slot = map[b];
+    // `build()` 已校验 bucket_map 长度等于 buckets，因此枚举下标即桶号。
+    for (b, &slot) in input.bucket_map.iter().enumerate() {
         let mark = if slot == 0 {
             0u32
         } else {
-            marks::mark(slot, marks::CLASS_NORMAL, gen, b as u16)
+            marks::mark(slot, marks::CLASS_NORMAL, input.gen, b as u16)
         };
         map_txt.push_str(&format!("{b} : {}, ", marks::hex(mark)));
     }
-    map_txt.push_str("}");
-    let seed_txt = if caps.jhash_seed && seed != 0 {
-        format!(" 0x{seed:08x}")
+    map_txt.push('}');
+    let seed_txt = if caps.jhash_seed && input.hash_seed != 0 {
+        format!(" 0x{:08x}", input.hash_seed)
     } else {
         String::new()
     };
@@ -478,7 +490,8 @@ pub fn build(input: &Input) -> Result<Program> {
     if input.buckets < 2 || input.buckets > marks::BUCKETS {
         return Err(Error::Config(format!(
             "桶数 {} 超出可用范围 2..={}",
-            input.buckets, marks::BUCKETS
+            input.buckets,
+            marks::BUCKETS
         )));
     }
     for l in input.lines {
@@ -508,7 +521,10 @@ pub fn build(input: &Input) -> Result<Program> {
         if !input.families.contains(&fam) {
             continue;
         }
-        let mut elems: Vec<String> = family_elems(items, fam).into_iter().map(|x| normalized_elem(&x)).collect();
+        let mut elems: Vec<String> = family_elems(items, fam)
+            .into_iter()
+            .map(|x| normalized_elem(&x))
+            .collect();
         elems.sort();
         elems.dedup();
         if elems.len() > MAX_SET_ELEMENTS {
@@ -519,8 +535,15 @@ pub fn build(input: &Input) -> Result<Program> {
         }
         decl.push_str(&set_block(
             name,
-            if fam == Family::V4 { "ipv4_addr" } else { "ipv6_addr" },
-            &["flags interval".to_string(), format!("comment \"{}\"", name)],
+            if fam == Family::V4 {
+                "ipv4_addr"
+            } else {
+                "ipv6_addr"
+            },
+            &[
+                "flags interval".to_string(),
+                format!("comment \"{}\"", name),
+            ],
             &elems,
         ));
         p.sets.push(name.to_string());
@@ -549,7 +572,9 @@ pub fn build(input: &Input) -> Result<Program> {
     }
     // 别人的标记一律不介入：没有区间匹配能力时这条也必须写（用 != 0 兜底）。
     chain_rules.push(format!("ct mark != 0 accept comment \"{TAG_FOREIGN_CT}\""));
-    chain_rules.push(format!("meta mark != 0 accept comment \"{TAG_FOREIGN_PKT}\""));
+    chain_rules.push(format!(
+        "meta mark != 0 accept comment \"{TAG_FOREIGN_PKT}\""
+    ));
 
     let lan: Vec<String> = input
         .lan_ifaces
@@ -591,7 +616,11 @@ pub fn build(input: &Input) -> Result<Program> {
             Family::V4 => ("ip", "saddr"),
             Family::V6 => ("ip6", "saddr"),
         };
-        let field = if tag.contains("src") { "saddr" } else { "daddr" };
+        let field = if tag.contains("src") {
+            "saddr"
+        } else {
+            "daddr"
+        };
         chain_rules.push(format!("{key} {field} @{name} accept comment \"{tag}\""));
     }
 
@@ -612,7 +641,8 @@ pub fn build(input: &Input) -> Result<Program> {
                     ));
                 } else {
                     let name = format!("smw_g_{slug}_mac");
-                    let mut el: Vec<String> = g.macs.iter().map(|m| m.to_ascii_lowercase()).collect();
+                    let mut el: Vec<String> =
+                        g.macs.iter().map(|m| m.to_ascii_lowercase()).collect();
                     el.sort();
                     el.dedup();
                     decl.push_str(&set_block(&name, "ether_addr", &[], &el));
@@ -621,26 +651,48 @@ pub fn build(input: &Input) -> Result<Program> {
                     matchers.push(format!("@{name}", name = name));
                 }
             }
-            let mut v4_cli = family_elems(&g.client_v4, Family::V4).into_iter().map(|x| normalized_elem(&x)).collect::<Vec<_>>();
-            let mut v6_cli = family_elems(&g.client_v6, Family::V6).into_iter().map(|x| normalized_elem(&x)).collect::<Vec<_>>();
+            let mut v4_cli = family_elems(&g.client_v4, Family::V4)
+                .into_iter()
+                .map(|x| normalized_elem(&x))
+                .collect::<Vec<_>>();
+            let mut v6_cli = family_elems(&g.client_v6, Family::V6)
+                .into_iter()
+                .map(|x| normalized_elem(&x))
+                .collect::<Vec<_>>();
             v4_cli.sort();
             v4_cli.dedup();
             v6_cli.sort();
             v6_cli.dedup();
             if !v4_cli.is_empty() {
                 let name = format!("smw_g_{slug}_cli4");
-                decl.push_str(&set_block(&name, "ipv4_addr", &["flags interval".into()], &v4_cli));
+                decl.push_str(&set_block(
+                    &name,
+                    "ipv4_addr",
+                    &["flags interval".into()],
+                    &v4_cli,
+                ));
                 p.sets.push(name.clone());
                 matchers.push(format!("ip saddr @{name}"));
             }
             if !v6_cli.is_empty() && input.families.contains(&Family::V6) {
                 let name = format!("smw_g_{slug}_cli6");
-                decl.push_str(&set_block(&name, "ipv6_addr", &["flags interval".into()], &v6_cli));
+                decl.push_str(&set_block(
+                    &name,
+                    "ipv6_addr",
+                    &["flags interval".into()],
+                    &v6_cli,
+                ));
                 p.sets.push(name.clone());
                 matchers.push(format!("ip6 saddr @{name}"));
             }
-            let mut v4_dst = family_elems(&g.v4, Family::V4).into_iter().map(|x| normalized_elem(&x)).collect::<Vec<_>>();
-            let mut v6_dst = family_elems(&g.v6, Family::V6).into_iter().map(|x| normalized_elem(&x)).collect::<Vec<_>>();
+            let mut v4_dst = family_elems(&g.v4, Family::V4)
+                .into_iter()
+                .map(|x| normalized_elem(&x))
+                .collect::<Vec<_>>();
+            let mut v6_dst = family_elems(&g.v6, Family::V6)
+                .into_iter()
+                .map(|x| normalized_elem(&x))
+                .collect::<Vec<_>>();
             v4_dst.sort();
             v4_dst.dedup();
             v6_dst.sort();
@@ -651,12 +703,22 @@ pub fn build(input: &Input) -> Result<Program> {
                 if v4_dst.len() > MAX_SET_ELEMENTS {
                     return Err(Error::Config(format!("规则 {slug} 目标数超过上限")));
                 }
-                decl.push_str(&set_block(&name, "ipv4_addr", &["flags interval".into()], &v4_dst));
+                decl.push_str(&set_block(
+                    &name,
+                    "ipv4_addr",
+                    &["flags interval".into()],
+                    &v4_dst,
+                ));
                 p.sets.push(name.clone());
             }
             if !v6_dst.is_empty() && input.families.contains(&Family::V6) {
                 let name = format!("smw_g_{slug}_dst6");
-                decl.push_str(&set_block(&name, "ipv6_addr", &["flags interval".into()], &v6_dst));
+                decl.push_str(&set_block(
+                    &name,
+                    "ipv6_addr",
+                    &["flags interval".into()],
+                    &v6_dst,
+                ));
                 p.sets.push(name.clone());
             }
             if !has_dst {
@@ -703,12 +765,17 @@ pub fn build(input: &Input) -> Result<Program> {
 
             let mark_txt = marks::hex(g.mark);
             if g.mark == 0 {
-                return Err(Error::Config(format!("规则 {slug} 的标记为 0，会退化为不分流")));
+                return Err(Error::Config(format!(
+                    "规则 {slug} 的标记为 0，会退化为不分流"
+                )));
             }
             // 目的匹配按族拆成两条规则，避免 inet 链里混用 ip/ip6 选择器。
             let mut fam_rules: Vec<(Option<String>, Option<Family>)> = Vec::new();
             if !v4_dst.is_empty() {
-                fam_rules.push((Some(format!("ip daddr @smw_g_{slug}_dst4")), Some(Family::V4)));
+                fam_rules.push((
+                    Some(format!("ip daddr @smw_g_{slug}_dst4")),
+                    Some(Family::V4),
+                ));
             } else if let Some(dns) = &g.dns_set {
                 if caps.dyn_timeout_sets {
                     let name = safe_name("DNS 集合", dns, 40)?;
@@ -738,7 +805,10 @@ pub fn build(input: &Input) -> Result<Program> {
             }
             if input.families.contains(&Family::V6) {
                 if !v6_dst.is_empty() {
-                    fam_rules.push((Some(format!("ip6 daddr @smw_g_{slug}_dst6")), Some(Family::V6)));
+                    fam_rules.push((
+                        Some(format!("ip6 daddr @smw_g_{slug}_dst6")),
+                        Some(Family::V6),
+                    ));
                 } else if v4_dst.is_empty() && g.dns_set.as_ref().map(|_| false).unwrap_or(true) {
                     // 无目标条件时 IPv6 也照同一意图匹配客户端集合。
                     fam_rules.push((None, Some(Family::V6)));
@@ -763,7 +833,10 @@ pub fn build(input: &Input) -> Result<Program> {
                 parts.push(format!("comment \"{tag}\""));
                 let line = parts.join(" ");
                 if line.len() > 4096 {
-                    return Err(Error::Config(format!("规则 {slug} 文本过长（{} 字节）", line.len())));
+                    return Err(Error::Config(format!(
+                        "规则 {slug} 文本过长（{} 字节）",
+                        line.len()
+                    )));
                 }
                 chain_rules.push(line);
                 p.tags.push(Tag {
@@ -779,21 +852,24 @@ pub fn build(input: &Input) -> Result<Program> {
     }
 
     // ---- 桶规则（热替换对象）----
-    if !lan.is_empty() && input.lines.iter().any(|l| input.bucket_map.iter().any(|s| *s == l.slot)) {
+    if !lan.is_empty()
+        && input
+            .lines
+            .iter()
+            .any(|l| input.bucket_map.contains(&l.slot))
+    {
         for fam in input.families {
             if let Some(bb) = bucket_rule(
-                input.algorithm,
+                input,
                 *fam,
                 CHAIN_PREROUTING,
-                &format!("smw:bucket:{}", match fam {
-                    Family::V4 => "v4",
-                    Family::V6 => "v6",
-                }),
-                input.buckets,
-                input.bucket_map,
-                input.gen,
-                input.hash_seed,
-                caps,
+                &format!(
+                    "smw:bucket:{}",
+                    match fam {
+                        Family::V4 => "v4",
+                        Family::V6 => "v6",
+                    }
+                ),
             ) {
                 chain_rules.push(bb.body.clone());
                 p.buckets.push(bb);
@@ -860,22 +936,40 @@ pub fn build(input: &Input) -> Result<Program> {
 
     let mut tags: Vec<Tag> = Vec::new();
     for t in [TAG_FOREIGN_CT, TAG_FOREIGN_PKT, TAG_NOT_NEW] {
-        tags.push(Tag { comment: t.to_string(), chain: CHAIN_PREROUTING });
+        tags.push(Tag {
+            comment: t.to_string(),
+            chain: CHAIN_PREROUTING,
+        });
     }
     if input.conn_sticky && caps.ct_mark_range {
-        tags.push(Tag { comment: TAG_INHERIT.to_string(), chain: CHAIN_PREROUTING });
+        tags.push(Tag {
+            comment: TAG_INHERIT.to_string(),
+            chain: CHAIN_PREROUTING,
+        });
     }
     if lan.is_empty() {
-        tags.push(Tag { comment: TAG_NO_LAN.to_string(), chain: CHAIN_PREROUTING });
+        tags.push(Tag {
+            comment: TAG_NO_LAN.to_string(),
+            chain: CHAIN_PREROUTING,
+        });
     } else {
-        tags.push(Tag { comment: TAG_NOT_LAN.to_string(), chain: CHAIN_PREROUTING });
+        tags.push(Tag {
+            comment: TAG_NOT_LAN.to_string(),
+            chain: CHAIN_PREROUTING,
+        });
     }
     tags.extend(p.tags.iter().cloned());
     for b in &p.buckets {
-        tags.push(Tag { comment: b.comment.clone(), chain: b.chain });
+        tags.push(Tag {
+            comment: b.comment.clone(),
+            chain: b.chain,
+        });
     }
     if !out_rules.is_empty() {
-        tags.push(Tag { comment: TAG_OUT_INHERIT.to_string(), chain: CHAIN_OUTPUT });
+        tags.push(Tag {
+            comment: TAG_OUT_INHERIT.to_string(),
+            chain: CHAIN_OUTPUT,
+        });
     }
     p.tags = tags;
     p.issues = issues;
@@ -904,8 +998,12 @@ pub fn include_file_text() -> String {
     let mut s = String::new();
     s.push_str("# smartmwan 静态占位（由 luci-app-smartmwan 安装）。\n");
     s.push_str("# 这里只声明 table inet smw 与一条空的 prerouting 链；具体规则由 smartmwand 运行期写入。\n");
-    s.push_str("# output 链**不在这里声明**：它需要 `type route hook output`，该语法由守护进程在设备上\n");
-    s.push_str("# 实测能力后再决定是否使用（见 probe_scripts / Capabilities::route_hook_output），\n");
+    s.push_str(
+        "# output 链**不在这里声明**：它需要 `type route hook output`，该语法由守护进程在设备上\n",
+    );
+    s.push_str(
+        "# 实测能力后再决定是否使用（见 probe_scripts / Capabilities::route_hook_output），\n",
+    );
     s.push_str("# 占位文件必须只含确定可用的语法，否则 fw4 启动就会失败。\n");
     s.push_str("# 删除本文件并重启 fw4 即可完全移除插件留下的内核对象（配合 uci delete firewall 的 include 段）。\n");
     s.push_str(&format!("table inet {TABLE} {{\n"));
@@ -949,7 +1047,10 @@ pub fn parse_chain_listing(text: &str) -> Vec<RuleInfo> {
         }
         buf.push_str(line);
         if let Some(h) = buf.rfind("# handle ") {
-            let digits: String = buf[h + 9..].chars().take_while(|c| c.is_ascii_digit()).collect();
+            let digits: String = buf[h + 9..]
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
             let handle: u64 = digits.parse().unwrap_or(0);
             let (rule_txt, _) = buf.split_at(h);
             out.push(to_rule_info(handle, rule_txt.trim()));
@@ -1007,7 +1108,11 @@ fn to_rule_info(handle: u64, rule_txt: &str) -> RuleInfo {
 }
 
 fn take_u64(s: &str) -> u64 {
-    s.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or(0)
+    s.chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .unwrap_or(0)
 }
 
 /// 临时脚本文件：写 0600，`Drop` 里删除，保证不在设备上留下含规则的残片。
@@ -1034,10 +1139,12 @@ impl Drop for Script {
     fn drop(&mut self) {
         if let Err(e) = std::fs::remove_file(&self.path) {
             if e.kind() != std::io::ErrorKind::NotFound {
-                logging::warn_ctx("firewall", "tmp-cleanup", &format!("临时 nft 脚本未删除: {e}"), &[(
-                    "path",
-                    self.path.display().to_string(),
-                )]);
+                logging::warn_ctx(
+                    "firewall",
+                    "tmp-cleanup",
+                    &format!("临时 nft 脚本未删除: {e}"),
+                    &[("path", self.path.display().to_string())],
+                );
             }
         }
     }
@@ -1177,11 +1284,31 @@ impl Nft {
 
     /// 读取版本（诊断用）。失败不阻断主流程，但必须记日志。
     pub async fn version(&self) -> Option<String> {
-        let inv = Invocation::with_options(&self.program, &["--version"], self.timeout, 4096, "nft-version").ok()?;
+        let inv = Invocation::with_options(
+            &self.program,
+            &["--version"],
+            self.timeout,
+            4096,
+            "nft-version",
+        )
+        .ok()?;
         exec::run(&inv).await.ok().map(|o| {
-            let t = o.stdout.trim().lines().next().unwrap_or("").trim().to_string();
+            let t = o
+                .stdout
+                .trim()
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
             if t.is_empty() {
-                o.stderr.trim().lines().next().unwrap_or("").trim().to_string()
+                o.stderr
+                    .trim()
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string()
             } else {
                 t
             }
@@ -1195,14 +1322,19 @@ impl Nft {
             return Ok(0);
         }
         if elems.len() > MAX_SET_ELEMENTS {
-            return Err(Error::Config(format!("单次写入元素 {} 超上限", elems.len())));
+            return Err(Error::Config(format!(
+                "单次写入元素 {} 超上限",
+                elems.len()
+            )));
         }
         let mut clean: Vec<String> = Vec::with_capacity(elems.len());
         for e in elems {
             let e = e.trim();
             let ok = e
                 .parse::<std::net::IpAddr>()
-                .map(|a| matches!(a, std::net::IpAddr::V4(_)) || matches!(a, std::net::IpAddr::V6(_)))
+                .map(|a| {
+                    matches!(a, std::net::IpAddr::V4(_)) || matches!(a, std::net::IpAddr::V6(_))
+                })
                 .unwrap_or(false);
             if !ok {
                 return Err(Error::Config(format!("集合元素不是 IP 字面量：{e}")));
@@ -1236,7 +1368,10 @@ impl Nft {
             }
             clean.push(e.trim().to_string());
         }
-        let stmt = format!("delete element inet {TABLE} {set} {{ {} }}\n", clean.join(", "));
+        let stmt = format!(
+            "delete element inet {TABLE} {set} {{ {} }}\n",
+            clean.join(", ")
+        );
         self.apply(&stmt).await
     }
 
@@ -1252,9 +1387,22 @@ impl Nft {
 
 /// nft 的错误常在第一/二行，保留全部文本又会撑爆日志，这里取有效信息。
 fn first_error_line(stderr: &str, stdout: &str) -> String {
-    let src = if stderr.trim().is_empty() { stdout } else { stderr };
-    let lines: Vec<&str> = src.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
-    let mut out = lines.iter().take(3).cloned().collect::<Vec<_>>().join(" | ");
+    let src = if stderr.trim().is_empty() {
+        stdout
+    } else {
+        stderr
+    };
+    let lines: Vec<&str> = src
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let mut out = lines
+        .iter()
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" | ");
     if out.len() > 400 {
         out.truncate(400);
     }
@@ -1321,7 +1469,10 @@ mod tests {
     use crate::system::netlink::Family;
 
     fn line(name: &str, slot: u8) -> Line {
-        Line { name: name.into(), slot }
+        Line {
+            name: name.into(),
+            slot,
+        }
     }
 
     fn map_all(slots: &[u8], buckets: u16) -> Vec<u8> {
@@ -1361,7 +1512,9 @@ mod tests {
     #[test]
     fn safe_name_rejects_injection_shapes() {
         // 这些都必须被拒，而不是「加引号后放过」。
-        for bad in ["a b", "a\"b", "a\\b", "a\nb", "-lead", "", "a;drop", "a$b", "a`b`"] {
+        for bad in [
+            "a b", "a\"b", "a\\b", "a\nb", "-lead", "", "a;drop", "a$b", "a`b`",
+        ] {
             assert!(safe_name("规则", bad, 40).is_err(), "{bad:?} 必须被拒绝");
         }
         assert_eq!(safe_name("规则", "pubg_eu", 40).unwrap(), "pubg_eu");
@@ -1380,7 +1533,13 @@ mod tests {
         assert!(p.text.contains(&format!("delete table inet {TABLE}")));
         assert!(p.text.contains("table inet smw {"));
         // 继承自己的、不介入别人的、非 LAN 不动、老连接不动。
-        for tag in [TAG_INHERIT, TAG_FOREIGN_CT, TAG_FOREIGN_PKT, TAG_NOT_LAN, TAG_NOT_NEW] {
+        for tag in [
+            TAG_INHERIT,
+            TAG_FOREIGN_CT,
+            TAG_FOREIGN_PKT,
+            TAG_NOT_LAN,
+            TAG_NOT_NEW,
+        ] {
             assert!(p.text.contains(tag), "缺少规则 {tag}：\n{}", p.text);
         }
         assert!(p.text.contains(marks::own_range_text()));
@@ -1396,7 +1555,11 @@ mod tests {
         let lan = vec!["br-lan".to_string()];
         let p = build(&input(&lines, &map, &lan)).unwrap();
         // 唯一被 delete 的对象是自己的表。
-        let deletes: Vec<&str> = p.text.lines().filter(|l| l.trim_start().starts_with("delete ")).collect();
+        let deletes: Vec<&str> = p
+            .text
+            .lines()
+            .filter(|l| l.trim_start().starts_with("delete "))
+            .collect();
         assert_eq!(deletes, vec![format!("delete table inet {TABLE}")]);
         assert!(!p.text.contains("inet fw4"), "程序里绝不能出现 fw4");
     }
@@ -1438,7 +1601,11 @@ mod tests {
         let map = vec![0, 0, 1, 1];
         let lan = vec!["br-lan".to_string()];
         let p = build(&input(&lines, &map, &lan)).unwrap();
-        assert!(p.buckets[0].body.contains("0 : 0x00000000"), "{}", p.buckets[0].body);
+        assert!(
+            p.buckets[0].body.contains("0 : 0x00000000"),
+            "{}",
+            p.buckets[0].body
+        );
         assert!(!p.text.contains("drop comment \"smw:no-lan"));
     }
 
@@ -1454,7 +1621,10 @@ mod tests {
         assert!(b.body.contains("meta l4proto { tcp, udp }"), "{}", b.body);
         assert!(b.body.contains("th sport"));
         assert!(b.body.contains("th dport"));
-        assert!(b.body.contains("ip protocol ."), "IPv4 五元组应含 ip protocol");
+        assert!(
+            b.body.contains("ip protocol ."),
+            "IPv4 五元组应含 ip protocol"
+        );
     }
 
     #[test]
@@ -1462,8 +1632,10 @@ mod tests {
         let lines = vec![line("wan", 1), line("wan2", 2)];
         let map = map_all(&[1, 2], 4);
         let lan = vec!["br-lan".to_string()];
-        let mut caps = Capabilities::default();
-        caps.th_payload = false;
+        let caps = Capabilities {
+            th_payload: false,
+            ..Default::default()
+        };
         let mut inp = input(&lines, &map, &lan);
         inp.algorithm = Algorithm::SrcIpDstIpDstPort;
         inp.caps = &caps;
@@ -1471,7 +1643,11 @@ mod tests {
         // 不支持 th 时退回无端口哈希：规则仍要装，否则完全不分流。
         assert_eq!(p.buckets.len(), 1);
         assert!(!p.buckets[0].body.contains("th dport"));
-        assert!(p.issues.iter().any(|i| i.message.contains("不支持")), "{:?}", p.issues);
+        assert!(
+            p.issues.iter().any(|i| i.message.contains("不支持")),
+            "{:?}",
+            p.issues
+        );
     }
 
     #[test]
@@ -1498,20 +1674,23 @@ mod tests {
         let lines = vec![line("wan", 1)];
         let map = map_all(&[1], 4);
         let lan = vec!["br-lan".to_string()];
-        let mut caps = Capabilities::default();
-        caps.ct_mark_range = false;
+        let caps = Capabilities {
+            ct_mark_range: false,
+            ..Default::default()
+        };
         let mut inp = input(&lines, &map, &lan);
         inp.caps = &caps;
         let p = build(&inp).unwrap();
         assert!(!p.text.contains(TAG_INHERIT), "不能写无法验证的继承规则");
         assert!(!p.text.contains(marks::own_range_text()));
         assert_eq!(p.buckets.len(), 1, "分类规则照常安装，流量仍被均衡");
-        assert!(p
-            .issues
-            .iter()
-            .any(|i| i.message.contains("区间匹配") && i.severity == Severity::Warning),
+        assert!(
+            p.issues
+                .iter()
+                .any(|i| i.message.contains("区间匹配") && i.severity == Severity::Warning),
             "{:?}",
-            p.issues);
+            p.issues
+        );
     }
 
     #[test]
@@ -1544,7 +1723,12 @@ mod tests {
         assert!(p.text.contains("aa:bb:cc:dd:ee:ff"), "MAC 统一小写");
         assert!(p.text.contains("158.101.0.0/16"));
         assert!(p.text.contains("192.168.1.20/32"), "主机地址补 /32");
-        let rule = p.text.lines().find(|l| l.contains("smw:game:pubg_eu")).unwrap().to_string();
+        let rule = p
+            .text
+            .lines()
+            .find(|l| l.contains("smw:game:pubg_eu"))
+            .unwrap()
+            .to_string();
         assert!(rule.contains("meta l4proto udp"));
         assert!(rule.contains("th dport { 30000-30100 }"));
         assert!(rule.contains("counter"));
@@ -1573,8 +1757,10 @@ mod tests {
             dns_set: Some("smw_g_svc_dns".into()),
             dns_timeout_s: 90,
         };
-        let mut caps_on = Capabilities::default();
-        caps_on.dyn_timeout_sets = true;
+        let caps_on = Capabilities {
+            dyn_timeout_sets: true,
+            ..Default::default()
+        };
         let games = [g];
         let mut inp = input(&lines, &map, &lan);
         inp.games = &games;
@@ -1586,14 +1772,20 @@ mod tests {
         assert!(p.text.contains("ip daddr @smw_g_svc_dns"));
 
         // 设备不支持动态集合时：规则整体降级，但必须留下明确说明。
-        let mut caps = Capabilities::default();
-        caps.dyn_timeout_sets = false;
+        let caps_off = Capabilities {
+            dyn_timeout_sets: false,
+            ..Default::default()
+        };
         let mut inp2 = input(&lines, &map, &lan);
         inp2.games = &games;
-        inp2.caps = &caps;
+        inp2.caps = &caps_off;
         let p2 = build(&inp2).unwrap();
         assert!(!p2.text.contains("dynamic"), "不应写出未验证语法");
-        assert!(p2.issues.iter().any(|i| i.message.contains("dynamic")), "{:?}", p2.issues);
+        assert!(
+            p2.issues.iter().any(|i| i.message.contains("dynamic")),
+            "{:?}",
+            p2.issues
+        );
     }
 
     #[test]
@@ -1606,7 +1798,10 @@ mod tests {
         inp.buckets = 8;
         assert!(build(&inp).is_err());
         // 槽位非法
-        let bad = vec![Line { name: "x".into(), slot: 0 }];
+        let bad = vec![Line {
+            name: "x".into(),
+            slot: 0,
+        }];
         let zmap = vec![0u8, 0, 1, 1];
         let mut inp = input(&bad, &zmap, &lan);
         inp.lines = &bad;
@@ -1643,8 +1838,10 @@ mod tests {
         let lines = vec![line("wan", 1)];
         let map = map_all(&[1], 4);
         let lan = vec!["br-lan".to_string()];
-        let mut caps = Capabilities::default();
-        caps.route_hook_output = true;
+        let caps = Capabilities {
+            route_hook_output: true,
+            ..Default::default()
+        };
         let fams = [Family::V4];
         let p6 = vec!["fd00::/8".to_string()];
         let mut inp = input(&lines, &map, &lan);
@@ -1652,7 +1849,10 @@ mod tests {
         inp.protected_v6 = &p6;
         inp.caps = &caps;
         let p = build(&inp).unwrap();
-        assert!(!p.text.contains("smw_protected_v6"), "IPv6 关闭时不建 IPv6 集合");
+        assert!(
+            !p.text.contains("smw_protected_v6"),
+            "IPv6 关闭时不建 IPv6 集合"
+        );
         assert_eq!(p.buckets.len(), 1);
         assert!(p.text.contains("type route hook output"));
         assert!(p.text.contains(TAG_OUT_INHERIT));
@@ -1708,7 +1908,10 @@ mod tests {
             packets: 5,
             bytes: 500,
         });
-        assert!(verify(&p.tags, &with_foreign).ok(), "外部规则不能被算成异常");
+        assert!(
+            verify(&p.tags, &with_foreign).ok(),
+            "外部规则不能被算成异常"
+        );
 
         // 多出一条带 smw: 前缀的历史规则 → 必须报出（残留规则检查）
         let mut stale = actual.clone();
@@ -1749,7 +1952,10 @@ mod tests {
     #[test]
     fn parser_is_empty_on_blank_or_error_output() {
         assert!(parse_chain_listing("").is_empty());
-        assert!(parse_chain_listing("Error: could not process family. \"inet\" not found.\n").is_empty());
+        assert!(
+            parse_chain_listing("Error: could not process family. \"inet\" not found.\n")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1771,8 +1977,15 @@ mod tests {
             .filter(|l| !l.trim_start().starts_with('#'))
             .collect::<Vec<_>>()
             .join("\n");
-        assert_eq!(body.matches("hook prerouting").count(), 1, "占位文件不得重复注册 hook");
-        assert!(!body.contains("type route"), "未经能力探测的 hook 类型不得进入静态占位");
+        assert_eq!(
+            body.matches("hook prerouting").count(),
+            1,
+            "占位文件不得重复注册 hook"
+        );
+        assert!(
+            !body.contains("type route"),
+            "未经能力探测的 hook 类型不得进入静态占位"
+        );
         assert!(!body.contains("chain output"));
     }
 
@@ -1805,7 +2018,10 @@ mod tests {
         assert!(!c.nft_exists);
         assert!(!c.route_hook_output);
         assert!(!c.dyn_timeout_sets);
-        assert!(!c.jhash_seed, "jhash 种子参数在多数版本上不存在，默认按不支持处理");
+        assert!(
+            !c.jhash_seed,
+            "jhash 种子参数在多数版本上不存在，默认按不支持处理"
+        );
         // 一个都没通过：分类能力整体视为不可用。
         assert!(!capabilities_from_probe("nft v1.1.7", &[]).jhash_map);
         assert!(!capabilities_from_probe("nft v1.1.7", &[]).ct_mark_range);

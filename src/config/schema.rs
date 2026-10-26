@@ -9,7 +9,6 @@
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr};
 
-
 use serde::{Deserialize, Serialize};
 
 use crate::marks;
@@ -640,22 +639,12 @@ impl ScoreWeights {
 /// 完整配置树。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct Config {
     pub global: GlobalConfig,
     pub wans: Vec<WanConfig>,
     pub games: Vec<GameRule>,
     pub score: ScoreWeights,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            global: GlobalConfig::default(),
-            wans: Vec::new(),
-            games: Vec::new(),
-            score: ScoreWeights::default(),
-        }
-    }
 }
 
 impl Config {
@@ -702,7 +691,10 @@ impl Config {
 /// 网络地址解析辅助：这些校验函数同时被 `validate.rs` 与规则匹配层复用，
 /// 集中一处可以避免「校验通过但匹配不通过」的双重标准。
 pub fn parse_addr_list(values: &[String]) -> Vec<IpAddr> {
-    values.iter().filter_map(|v| v.trim().parse().ok()).collect()
+    values
+        .iter()
+        .filter_map(|v| v.trim().parse().ok())
+        .collect()
 }
 
 pub fn is_ipv4_cidr(s: &str) -> bool {
@@ -785,12 +777,10 @@ mod tests {
 
     #[test]
     fn failover_order_respects_explicit_roles_first() {
-        let mut c = Config::default();
-        c.wans = vec![
-            wan("wan1", 30),
-            wan("wan2", 10),
-            wan("wan3", 20),
-        ];
+        let mut c = Config {
+            wans: vec![wan("wan1", 30), wan("wan2", 10), wan("wan3", 20)],
+            ..Default::default()
+        };
         c.global.primary = "wan1".into();
         c.global.backup_order = vec!["wan3".into()];
         assert_eq!(c.failover_order(), vec!["wan1", "wan3", "wan2"]);
@@ -798,10 +788,16 @@ mod tests {
         c.global.primary = "ghost".into();
         let o = c.failover_order();
         assert!(!o.contains(&"ghost".to_string()), "不能捏造不存在的线路");
-        assert_eq!(o, vec!["wan3", "wan2", "wan1"], "失去主线路后按显式备份顺序，其余按 priority");
+        assert_eq!(
+            o,
+            vec!["wan3", "wan2", "wan1"],
+            "失去主线路后按显式备份顺序，其余按 priority"
+        );
         // 完全没有显式指定时，纯按 priority 升序（同优先级按段名，保证确定性）
-        let mut d = Config::default();
-        d.wans = vec![wan("wan1", 30), wan("wan2", 10), wan("wan3", 20)];
+        let d = Config {
+            wans: vec![wan("wan1", 30), wan("wan2", 10), wan("wan3", 20)],
+            ..Default::default()
+        };
         assert_eq!(d.failover_order(), vec!["wan2", "wan3", "wan1"]);
     }
 
@@ -822,10 +818,19 @@ mod tests {
 
     #[test]
     fn port_range_parsing() {
-        assert_eq!(parse_port_range("443"), Some(PortRange { start: 443, end: 443 }));
+        assert_eq!(
+            parse_port_range("443"),
+            Some(PortRange {
+                start: 443,
+                end: 443
+            })
+        );
         assert_eq!(
             parse_port_range(" 8000-8010 "),
-            Some(PortRange { start: 8000, end: 8010 })
+            Some(PortRange {
+                start: 8000,
+                end: 8010
+            })
         );
         assert_eq!(parse_port_range("8010-8000"), None, "逆序范围必须拒绝");
         assert_eq!(parse_port_range("0"), Some(PortRange { start: 0, end: 0 }));

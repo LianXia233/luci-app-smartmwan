@@ -162,7 +162,11 @@ mod tests {
     #[test]
     fn shift_limit_allows_progress_on_small_sets() {
         assert_eq!(shift_limit(64, 100), 6);
-        assert_eq!(shift_limit(8, 10), 1, "小桶数必须至少能搬 1 个，否则算法被锁死");
+        assert_eq!(
+            shift_limit(8, 10),
+            1,
+            "小桶数必须至少能搬 1 个，否则算法被锁死"
+        );
         assert_eq!(shift_limit(0, 500), 0);
         assert_eq!(shift_limit(64, 1000), 64);
     }
@@ -174,12 +178,18 @@ mod tests {
         assert!(!d.offer(true, 100), "连续次数与稳定时间都还没够");
         assert!(!d.offer(true, 500));
         assert!(d.offer(true, 1100), "次数与时间都满足时首次触发");
-        assert!(!d.offer(true, 2000), "已触发后必须保持沉默，直到出现一次未命中");
+        assert!(
+            !d.offer(true, 2000),
+            "已触发后必须保持沉默，直到出现一次未命中"
+        );
         assert!(!d.offer(false, 2100), "未命中本身不触发任何东西");
         // 「重新武装」= 次数与计时从头再来，不是「立刻又能触发一次」
         assert!(!d.offer(true, 3300), "未命中后必须重新累计次数");
         assert!(!d.offer(true, 3400));
-        assert!(!d.offer(true, 3500), "次数已满但稳定时间未达（本轮起点 3300ms）");
+        assert!(
+            !d.offer(true, 3500),
+            "次数已满但稳定时间未达（本轮起点 3300ms）"
+        );
         assert!(d.offer(true, 4400), "重新满足次数与时间后再次触发");
     }
 
@@ -195,11 +205,22 @@ mod tests {
 
     #[test]
     fn advantage_is_relative_with_sane_edges() {
-        assert!(advantage_permille(60.0, 50.0) > 150, "20% 优势必须超过默认滞回");
+        assert!(
+            advantage_permille(60.0, 50.0) > 150,
+            "20% 优势必须超过默认滞回"
+        );
         assert_eq!(advantage_permille(50.0, 50.0), 0);
         assert!(advantage_permille(40.0, 50.0) < 0, "更差就是负优势");
-        assert_eq!(advantage_permille(10.0, 0.0), 1000, "当前为 0 分时任何有效候选都是巨大优势");
-        assert_eq!(advantage_permille(0.0, 0.0), 0, "双方都无数据时不该假装有人更优");
+        assert_eq!(
+            advantage_permille(10.0, 0.0),
+            1000,
+            "当前为 0 分时任何有效候选都是巨大优势"
+        );
+        assert_eq!(
+            advantage_permille(0.0, 0.0),
+            0,
+            "双方都无数据时不该假装有人更优"
+        );
     }
 
     #[test]
@@ -209,7 +230,10 @@ mod tests {
         assert!(!interval_elapsed(1000, 1999, 1000));
         assert!(interval_elapsed(1000, 2000, 1000));
         // 时间戳接近上限时只能得出「才过 5ms」，绝不能因下溢变成「已过很久」
-        assert!(!interval_elapsed(u64::MAX - 5, u64::MAX, 1000), "回绕不得变成负数或巨大间隔");
+        assert!(
+            !interval_elapsed(u64::MAX - 5, u64::MAX, 1000),
+            "回绕不得变成负数或巨大间隔"
+        );
         assert!(interval_elapsed(u64::MAX - 5000, u64::MAX, 1000));
     }
 }

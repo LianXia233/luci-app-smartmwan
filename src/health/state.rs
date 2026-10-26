@@ -144,7 +144,9 @@ impl Machine {
         self.consec_fail
     }
     pub fn warmup_remaining_ms(&self, now_ms: u64) -> u64 {
-        self.warmup_until_ms.map(|t| t.saturating_sub(now_ms)).unwrap_or(0)
+        self.warmup_until_ms
+            .map(|t| t.saturating_sub(now_ms))
+            .unwrap_or(0)
     }
     pub fn in_warmup(&self, now_ms: u64) -> bool {
         self.warmup_until_ms.map(|t| now_ms < t).unwrap_or(false)
@@ -160,7 +162,12 @@ impl Machine {
         if to == self.state {
             return;
         }
-        self.history.push(Transition { at_ms: now_ms, from: self.state, to, reason });
+        self.history.push(Transition {
+            at_ms: now_ms,
+            from: self.state,
+            to,
+            reason,
+        });
         if self.history.len() > HISTORY_MAX {
             let excess = self.history.len() - HISTORY_MAX;
             self.history.drain(0..excess);
@@ -200,7 +207,11 @@ impl Machine {
                 if ok {
                     self.set(State::Healthy, now_ms, "首次探测成功".into());
                 } else if self.consec_fail >= self.cfg.failure_threshold.max(1) {
-                    self.set(State::Failed, now_ms, format!("启动即连续失败 {} 次", self.consec_fail));
+                    self.set(
+                        State::Failed,
+                        now_ms,
+                        format!("启动即连续失败 {} 次", self.consec_fail),
+                    );
                 }
             }
             State::Healthy => {
@@ -208,7 +219,10 @@ impl Machine {
                     self.set(
                         State::Failed,
                         now_ms,
-                        format!("连续失败 {} 次（阈值 {}）", self.consec_fail, self.cfg.failure_threshold),
+                        format!(
+                            "连续失败 {} 次（阈值 {}）",
+                            self.consec_fail, self.cfg.failure_threshold
+                        ),
                     );
                 } else if degraded && ok {
                     self.set(State::Degraded, now_ms, "连通但指标越过降级阈值".into());
@@ -289,7 +303,11 @@ impl Machine {
     /// 预热结束时间是否已到 + 是否满足最小切换间隔。由 scheduler 在切换前调用。
     ///
     /// 这里是「回切条件」的唯一实现处，避免主备逻辑与状态机各说各话。
-    pub fn ready_for_promotion(&self, now_ms: u64, min_switch_interval_ms: u64) -> Result<(), String> {
+    pub fn ready_for_promotion(
+        &self,
+        now_ms: u64,
+        min_switch_interval_ms: u64,
+    ) -> Result<(), String> {
         // 预热检查必须排在状态检查之前：RECOVERING 本身就在预热中，
         // 若先报「状态不符」就看不出到底是「还在预热」还是「根本没恢复」。
         if self.in_warmup(now_ms) {
@@ -341,25 +359,34 @@ mod tests {
     fn unknown_is_not_healthy_and_needs_threshold_before_failing() {
         let mut m = Machine::new(cfg(), 0);
         assert_eq!(m.state(), State::Unknown);
-        assert!(!m.state().carries_normal_traffic(), "未验证的线路不能承载流量");
+        assert!(
+            !m.state().carries_normal_traffic(),
+            "未验证的线路不能承载流量"
+        );
         // 单次失败不应直接判定 FAILED（阈值 3）
         m.record(false, false, 1);
         assert_eq!(m.state(), State::Unknown);
         m.record(false, false, 2);
         m.record(false, false, 3);
         assert_eq!(m.state(), State::Failed);
-        assert!(m.history().iter().any(|t| t.reason.contains("启动即连续失败")));
+        assert!(m
+            .history()
+            .iter()
+            .any(|t| t.reason.contains("启动即连续失败")));
     }
 
     #[test]
     fn first_success_healthy_then_fail_after_threshold() {
         let mut m = Machine::new(cfg(), 0);
-        assert_eq!(m.record(true, false, 10), Some(Transition {
-            at_ms: 10,
-            from: State::Unknown,
-            to: State::Healthy,
-            reason: "首次探测成功".into(),
-        }));
+        assert_eq!(
+            m.record(true, false, 10),
+            Some(Transition {
+                at_ms: 10,
+                from: State::Unknown,
+                to: State::Healthy,
+                reason: "首次探测成功".into(),
+            })
+        );
         for i in 1..=2 {
             assert!(m.record(false, false, 20 + i).is_none(), "未达阈值不应迁移");
         }
@@ -389,7 +416,10 @@ mod tests {
         m.record(true, true, 2);
         assert_eq!(m.state(), State::Degraded);
         assert!(m.state().carries_normal_traffic(), "降级仍可用，只是质量差");
-        assert!(!m.state().usable_for_latency(), "降级线路不该被选为游戏最优");
+        assert!(
+            !m.state().usable_for_latency(),
+            "降级线路不该被选为游戏最优"
+        );
         m.record(true, false, 3);
         assert_eq!(m.state(), State::Healthy);
         // 降级期间真的断了：仍然按阈值判 FAILED
@@ -441,7 +471,10 @@ mod tests {
         m.record(false, false, 12);
         assert_eq!(m.state(), State::Failed);
         assert_eq!(m.consec_ok(), 0, "预热期失败必须清空成功计数");
-        assert!(m.history().iter().any(|t| t.reason.contains("预热期再次失败")));
+        assert!(m
+            .history()
+            .iter()
+            .any(|t| t.reason.contains("预热期再次失败")));
     }
 
     #[test]
@@ -456,7 +489,11 @@ mod tests {
         }
         assert_eq!(m.state(), State::Recovering);
         m.record(true, true, 7000);
-        assert_eq!(m.state(), State::Degraded, "预热结束但指标仍差 → 降级，不给健康");
+        assert_eq!(
+            m.state(),
+            State::Degraded,
+            "预热结束但指标仍差 → 降级，不给健康"
+        );
     }
 
     #[test]
@@ -520,7 +557,13 @@ mod tests {
 
     #[test]
     fn state_strings_are_stable_for_rpc() {
-        for s in [State::Unknown, State::Healthy, State::Degraded, State::Failed, State::Recovering] {
+        for s in [
+            State::Unknown,
+            State::Healthy,
+            State::Degraded,
+            State::Failed,
+            State::Recovering,
+        ] {
             assert_eq!(State::parse(s.as_str()), Some(s), "字符串必须可往返");
         }
         assert_eq!(State::parse("ok"), None, "未知字符串不能被猜成某个状态");

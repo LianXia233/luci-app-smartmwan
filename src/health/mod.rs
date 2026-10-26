@@ -30,9 +30,7 @@ use crate::logging;
 use crate::system::interface::Resolved;
 
 pub use metrics::{Metrics, Sample, SlidingWindow};
-pub use probe::{
-    probe_batch, request_for, Prober, ProbeResult, Request, Target,
-};
+pub use probe::{probe_batch, request_for, ProbeResult, Prober, Request, Target};
 pub use state::{Machine as StateMachine, State, Transition};
 
 /// 单条线路的运行时健康视图（RPC 与调度器的唯一数据来源）。
@@ -78,7 +76,12 @@ impl WanHealth {
 
     /// 状态是否可信到足以用于决策。
     pub fn confident(&self) -> bool {
-        self.blocked_reason.is_none() && self.metrics.as_ref().map(|m| m.confident()).unwrap_or(false)
+        self.blocked_reason.is_none()
+            && self
+                .metrics
+                .as_ref()
+                .map(|m| m.confident())
+                .unwrap_or(false)
     }
 }
 
@@ -105,7 +108,10 @@ impl Snapshot {
     /// 可承载普通流量的线路名，按配置的优先级顺序由调用方决定；
     /// 这里只做客观筛选，不含任何「猜测」。
     pub fn usable(&self) -> Vec<&WanHealth> {
-        self.wan.values().filter(|w| w.carries_normal_traffic()).collect()
+        self.wan
+            .values()
+            .filter(|w| w.carries_normal_traffic())
+            .collect()
     }
 
     /// 主备模式下是否连一条可用线路都没有。
@@ -227,9 +233,12 @@ impl Tracker {
         let ok = res.outcome.is_reply();
         let at = if res.at_ms == 0 { now_ms } else { res.at_ms };
         let degraded = ok
-            && self
-                .window
-                .is_degraded(at, self.hc.degraded_rtt_ms, self.hc.degraded_loss_pmm, self.hc.degraded_jitter_ms);
+            && self.window.is_degraded(
+                at,
+                self.hc.degraded_rtt_ms,
+                self.hc.degraded_loss_pmm,
+                self.hc.degraded_jitter_ms,
+            );
         if let Some(t) = self.machine.record(ok, degraded, at) {
             logging::info_ctx(
                 "health",
@@ -254,11 +263,19 @@ impl Tracker {
         if self.blocked_reason != reason {
             logging::info_ctx(
                 "health",
-                if reason.is_some() { "blocked" } else { "unblocked" },
+                if reason.is_some() {
+                    "blocked"
+                } else {
+                    "unblocked"
+                },
                 &format!(
                     "线路 {} {}：{}",
                     self.name,
-                    if reason.is_some() { "不可用" } else { "恢复可用" },
+                    if reason.is_some() {
+                        "不可用"
+                    } else {
+                        "恢复可用"
+                    },
                     reason.as_deref().unwrap_or("无")
                 ),
                 &[("wan", self.name.clone())],
@@ -418,7 +435,10 @@ pub fn parse_targets(w: &WanConfig) -> Vec<Target> {
         logging::warn_ctx(
             "health",
             "probe-target",
-            &format!("线路 {} 的探测目标 “{t}” 既不是 IP 也不是合法域名，已跳过", w.name),
+            &format!(
+                "线路 {} 的探测目标 “{t}” 既不是 IP 也不是合法域名，已跳过",
+                w.name
+            ),
             &[("wan", w.name.clone())],
         );
     }
@@ -476,11 +496,15 @@ pub fn plan(cfg: &Config, resolved: &[Resolved]) -> Plan {
             continue;
         }
         let Some(r) = by_name.get(w.name.as_str()) else {
-            p.blocked.push((w.name.clone(), "找不到对应的网络设备（接口可能已重拨）".into()));
+            p.blocked.push((
+                w.name.clone(),
+                "找不到对应的网络设备（接口可能已重拨）".into(),
+            ));
             continue;
         };
         if !r.link_up {
-            p.blocked.push((w.name.clone(), format!("设备 {} 链路未 up", r.device)));
+            p.blocked
+                .push((w.name.clone(), format!("设备 {} 链路未 up", r.device)));
             continue;
         }
         let mut targets = parse_targets(w);
@@ -496,14 +520,17 @@ pub fn plan(cfg: &Config, resolved: &[Resolved]) -> Plan {
             }
         }
         if targets.is_empty() {
-            p.blocked.push((w.name.clone(), "既没有探测目标也没有可用网关".into()));
+            p.blocked
+                .push((w.name.clone(), "既没有探测目标也没有可用网关".into()));
             continue;
         }
         for t in targets {
             let mut req = request_for(r, t, &w.health);
             req.proto = w.probe_proto;
             req.port = w.probe_port;
-            p.batch_deadline_ms = p.batch_deadline_ms.max(req.timeout.as_millis() as u64 * 2 + 50);
+            p.batch_deadline_ms = p
+                .batch_deadline_ms
+                .max(req.timeout.as_millis() as u64 * 2 + 50);
             p.requests.push(req);
         }
     }
@@ -591,7 +618,11 @@ pub async fn run_round<P: Prober + ?Sized>(
             info.ignored,
             info.transitions,
             info.finished_at_ms.saturating_sub(info.started_at_ms),
-            if info.cancelled { "（被关停打断或超出批次期限）" } else { "" }
+            if info.cancelled {
+                "（被关停打断或超出批次期限）"
+            } else {
+                ""
+            }
         ),
         &[],
     );
@@ -610,8 +641,18 @@ pub fn healthy_names(cfg: &Config, snap: &Snapshot) -> Vec<String> {
         .map(|w| w.name.clone())
         .collect();
     out.sort_by(|a, b| {
-        let pa = cfg.wans.iter().find(|w| w.name == *a).map(|w| w.priority).unwrap_or(u16::MAX);
-        let pb = cfg.wans.iter().find(|w| w.name == *b).map(|w| w.priority).unwrap_or(u16::MAX);
+        let pa = cfg
+            .wans
+            .iter()
+            .find(|w| w.name == *a)
+            .map(|w| w.priority)
+            .unwrap_or(u16::MAX);
+        let pb = cfg
+            .wans
+            .iter()
+            .find(|w| w.name == *b)
+            .map(|w| w.priority)
+            .unwrap_or(u16::MAX);
         pa.cmp(&pb).then_with(|| a.cmp(b))
     });
     out
@@ -652,7 +693,8 @@ pub fn check_probe_targets(cfg: &Config, report: &mut validate::Report) {
             report.issues.push(validate::Issue {
                 severity: validate::Severity::Warning,
                 path: format!("smartmwan.wan[{}]", w.name),
-                message: "未配置探测目标，健康判定将退回网关地址；网关不可 ping 时线路会被误判".into(),
+                message: "未配置探测目标，健康判定将退回网关地址；网关不可 ping 时线路会被误判"
+                    .into(),
                 hint: Some("至少配置 2 个不同服务商的探测目标，减少被单点屏蔽造成的误判".into()),
             });
         }
@@ -666,7 +708,9 @@ pub fn check_probe_targets(cfg: &Config, report: &mut validate::Report) {
                     severity: validate::Severity::Error,
                     path: format!("smartmwan.wan[{}]", w.name),
                     message: format!("探测目标 “{t}” 既不是合法 IP 也不是合法域名"),
-                    hint: Some("填写 IPv4/IPv6 地址或完整域名，例如 1.1.1.1 或 dns.example.com".into()),
+                    hint: Some(
+                        "填写 IPv4/IPv6 地址或完整域名，例如 1.1.1.1 或 dns.example.com".into(),
+                    ),
                 });
             }
         }
@@ -698,7 +742,12 @@ mod tests {
     }
 
     fn res(proto: ProbeProto, outcome: Outcome, at: u64) -> ProbeResult {
-        ProbeResult { req: req(proto), at_ms: at, outcome, resolved: None }
+        ProbeResult {
+            req: req(proto),
+            at_ms: at,
+            outcome,
+            resolved: None,
+        }
     }
 
     /// 同一条结果换上真实请求（模拟探测器回传）。
@@ -722,17 +771,18 @@ mod tests {
     }
 
     fn cfg_wans(names: &[&str]) -> Config {
-        let mut c = Config::default();
-        c.wans = names
-            .iter()
-            .map(|n| WanConfig {
-                name: (*n).into(),
-                enabled: true,
-                probe_targets: vec!["1.1.1.1".into()],
-                ..Default::default()
-            })
-            .collect();
-        c
+        Config {
+            wans: names
+                .iter()
+                .map(|n| WanConfig {
+                    name: (*n).into(),
+                    enabled: true,
+                    probe_targets: vec!["1.1.1.1".into()],
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -741,11 +791,21 @@ mod tests {
         let mut t = Tracker::new("wan1", &h, 0);
         assert_eq!(t.state(), State::Unknown);
         // 单次成功不足以进入 HEALTHY：状态机自己决定，这里保持与其一致。
-        t.record(&res(ProbeProto::Icmp, Outcome::Reply { rtt_ms: 10 }, 100), 100);
-        assert_eq!(t.state(), State::Healthy, "首次成功即 HEALTHY 是状态机的既定语义");
+        t.record(
+            &res(ProbeProto::Icmp, Outcome::Reply { rtt_ms: 10 }, 100),
+            100,
+        );
+        assert_eq!(
+            t.state(),
+            State::Healthy,
+            "首次成功即 HEALTHY 是状态机的既定语义"
+        );
         // 失败要达阈值才判 FAILED。
         for i in 0..h.failure_threshold - 1 {
-            t.record(&res(ProbeProto::Icmp, Outcome::Timeout, 200 + i as u64), 200);
+            t.record(
+                &res(ProbeProto::Icmp, Outcome::Timeout, 200 + i as u64),
+                200,
+            );
         }
         assert_eq!(t.state(), State::Healthy, "未达阈值不该判死");
         t.record(&res(ProbeProto::Icmp, Outcome::Timeout, 300), 300);
@@ -757,18 +817,34 @@ mod tests {
         let h = hc();
         let mut t = Tracker::new("wan1", &h, 0);
         for i in 0..h.recovery_threshold {
-            t.record(&res(ProbeProto::Icmp, Outcome::Reply { rtt_ms: 10 }, i as u64 * 100), 0);
+            t.record(
+                &res(
+                    ProbeProto::Icmp,
+                    Outcome::Reply { rtt_ms: 10 },
+                    i as u64 * 100,
+                ),
+                0,
+            );
         }
         assert_eq!(t.state(), State::Healthy);
         for i in 0..h.failure_threshold + 3 {
             let at = 1000 + i as u64;
-            t.record(&res(ProbeProto::Icmp, Outcome::LocalError("解析失败".into()), at), at);
-            t.record(&res(ProbeProto::Icmp, Outcome::Unsupported("无权限".into()), at), at);
+            t.record(
+                &res(ProbeProto::Icmp, Outcome::LocalError("解析失败".into()), at),
+                at,
+            );
+            t.record(
+                &res(ProbeProto::Icmp, Outcome::Unsupported("无权限".into()), at),
+                at,
+            );
         }
         assert_eq!(t.state(), State::Healthy, "权限/解析错误绝不能被算成断线");
         let s = t.snapshot(2000);
         assert_eq!(s.probes_ignored, (h.failure_threshold + 3) as u64 * 2);
-        assert!(s.probes_total > s.probes_ignored, "总数必须同时包含有效与无效");
+        assert!(
+            s.probes_total > s.probes_ignored,
+            "总数必须同时包含有效与无效"
+        );
     }
 
     #[test]
@@ -777,11 +853,20 @@ mod tests {
         h.degraded_rtt_ms = 50;
         let mut t = Tracker::new("wan1", &h, 0);
         for i in 0..8u64 {
-            t.record(&res(ProbeProto::Icmp, Outcome::Reply { rtt_ms: 300 }, i * 100), 0);
+            t.record(
+                &res(ProbeProto::Icmp, Outcome::Reply { rtt_ms: 300 }, i * 100),
+                0,
+            );
         }
         assert_eq!(t.state(), State::Degraded, "RTT 越线必须降级");
-        assert!(t.snapshot(1000).carries_normal_traffic(), "降级仍承载普通流量");
-        assert!(!t.snapshot(1000).usable_for_latency(), "降级线路不该被选为游戏最优");
+        assert!(
+            t.snapshot(1000).carries_normal_traffic(),
+            "降级仍承载普通流量"
+        );
+        assert!(
+            !t.snapshot(1000).usable_for_latency(),
+            "降级线路不该被选为游戏最优"
+        );
         for i in 0..h.failure_threshold {
             let at = 1000 + i as u64 * 100;
             t.record(&res(ProbeProto::Icmp, Outcome::Timeout, at), at);
@@ -795,14 +880,24 @@ mod tests {
         h.degraded_rtt_ms = 1000;
         let mut t = Tracker::new("wan1", &h, 0);
         for i in 0..8u64 {
-            t.record(&res(ProbeProto::Icmp, Outcome::Reply { rtt_ms: 300 }, i * 100), 0);
+            t.record(
+                &res(ProbeProto::Icmp, Outcome::Reply { rtt_ms: 300 }, i * 100),
+                0,
+            );
         }
         assert_eq!(t.state(), State::Healthy);
         h.degraded_rtt_ms = 100;
         t.update_config(&h);
-        assert_eq!(t.state(), State::Healthy, "改阈值不能把健康线路打回 UNKNOWN");
+        assert_eq!(
+            t.state(),
+            State::Healthy,
+            "改阈值不能把健康线路打回 UNKNOWN"
+        );
         // 新阈值立刻生效
-        t.record(&res(ProbeProto::Icmp, Outcome::Reply { rtt_ms: 310 }, 2000), 2000);
+        t.record(
+            &res(ProbeProto::Icmp, Outcome::Reply { rtt_ms: 310 }, 2000),
+            2000,
+        );
         assert_eq!(t.state(), State::Degraded);
     }
 
@@ -816,7 +911,10 @@ mod tests {
         t.record(&res(ProbeProto::Icmp, Outcome::Reply { rtt_ms: 10 }, 0), 0);
         t.record(&res(ProbeProto::Icmp, Outcome::Timeout, 100), 100);
         assert_eq!(t.state(), State::Failed);
-        t.record(&res(ProbeProto::Icmp, Outcome::Reply { rtt_ms: 10 }, 200), 200);
+        t.record(
+            &res(ProbeProto::Icmp, Outcome::Reply { rtt_ms: 10 }, 200),
+            200,
+        );
         assert_eq!(t.state(), State::Recovering, "warmup>0 时必须先进入预热");
         // 没有新探测，只靠时间推进
         assert!(!t.tick(500), "预热未结束时不该迁移");
@@ -846,7 +944,10 @@ mod tests {
         assert_eq!(r.snapshot(0).wan.len(), 2);
         assert!(!r.snapshot(0).measured, "没探过就必须标记未测量");
         r.set_blocked("wan1", Some("x".into()));
-        assert_eq!(r.snapshot(0).get("wan1").unwrap().blocked_reason.as_deref(), Some("x"));
+        assert_eq!(
+            r.snapshot(0).get("wan1").unwrap().blocked_reason.as_deref(),
+            Some("x")
+        );
 
         cfg.wans.pop();
         r.ensure(&cfg, 0);
@@ -886,7 +987,10 @@ mod tests {
         assert_eq!(t[2], Target::Domain("dns.example.com".into()));
         assert_eq!(t[3], Target::Domain("*.weird.example.com".into()));
         w.probe_targets = vec!["；rm -rf /".into(), "1.2.3".into()];
-        assert!(parse_targets(&w).is_empty(), "非法输入不能进入探测，更不能被拼进任何命令");
+        assert!(
+            parse_targets(&w).is_empty(),
+            "非法输入不能进入探测，更不能被拼进任何命令"
+        );
     }
 
     #[test]
@@ -899,7 +1003,10 @@ mod tests {
         assert_eq!(p.requests.len(), 1);
         assert_eq!(p.requests[0].wan, "wan1");
         assert_eq!(p.requests[0].device, "dev-wan1");
-        assert_eq!(p.requests[0].src.map(|a| a.to_string()), Some("10.0.0.2".into()));
+        assert_eq!(
+            p.requests[0].src.map(|a| a.to_string()),
+            Some("10.0.0.2".into())
+        );
         let names: Vec<&str> = p.blocked.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, vec!["wan2", "wan3"], "维护与停用线路都要给出原因");
         assert!(p.blocked.iter().any(|(_, r)| r == "维护模式"));
@@ -912,8 +1019,14 @@ mod tests {
         let rs = vec![resolved("wan1", false)];
         let p = plan(&cfg, &rs);
         assert!(p.requests.is_empty());
-        assert!(p.blocked.iter().any(|(n, r)| n == "wan1" && r.contains("链路未 up")));
-        assert!(p.blocked.iter().any(|(n, r)| n == "wan2" && r.contains("找不到")));
+        assert!(p
+            .blocked
+            .iter()
+            .any(|(n, r)| n == "wan1" && r.contains("链路未 up")));
+        assert!(p
+            .blocked
+            .iter()
+            .any(|(n, r)| n == "wan2" && r.contains("找不到")));
     }
 
     #[test]
@@ -922,7 +1035,10 @@ mod tests {
         cfg.wans[0].probe_targets.clear();
         let p = plan(&cfg, &[resolved("wan1", true)]);
         assert_eq!(p.requests.len(), 1, "没有显式目标时退回网关");
-        assert_eq!(p.requests[0].target, Target::Addr("10.0.0.1".parse().unwrap()));
+        assert_eq!(
+            p.requests[0].target,
+            Target::Addr("10.0.0.1".parse().unwrap())
+        );
 
         let mut r = resolved("wan1", true);
         r.gw4 = None;
@@ -945,7 +1061,11 @@ mod tests {
         });
         r.set_blocked("c", Some("维护".into()));
         let names = healthy_names(&cfg, &r.snapshot(1));
-        assert_eq!(names, vec!["b".to_string(), "a".to_string()], "按优先级排序且排除被阻断线路");
+        assert_eq!(
+            names,
+            vec!["b".to_string(), "a".to_string()],
+            "按优先级排序且排除被阻断线路"
+        );
     }
 
     #[tokio::test]
@@ -955,7 +1075,11 @@ mod tests {
             fn probe(&self, req: Request) -> probe::BoxFuture<'_, crate::Result<ProbeResult>> {
                 Box::pin(async move {
                     Ok(res_with(
-                        res(ProbeProto::Icmp, Outcome::Reply { rtt_ms: 12 }, logging::now_ms()),
+                        res(
+                            ProbeProto::Icmp,
+                            Outcome::Reply { rtt_ms: 12 },
+                            logging::now_ms(),
+                        ),
                         req,
                     ))
                 })
@@ -989,7 +1113,11 @@ mod tests {
             fn probe(&self, req: Request) -> probe::BoxFuture<'_, crate::Result<ProbeResult>> {
                 Box::pin(async move {
                     Ok(res_with(
-                        res(ProbeProto::Icmp, Outcome::Reply { rtt_ms: 12 }, logging::now_ms()),
+                        res(
+                            ProbeProto::Icmp,
+                            Outcome::Reply { rtt_ms: 12 },
+                            logging::now_ms(),
+                        ),
                         req,
                     ))
                 })
@@ -1001,7 +1129,10 @@ mod tests {
         let info = run_round(Arc::new(Fixed), &cfg, &[resolved("wan1", true)], &r, rx).await;
         assert_eq!(info.planned, 1);
         let snap = r.snapshot(logging::now_ms());
-        assert!(snap.get("wan2").unwrap().blocked_reason.is_some(), "缺设备必须给出不可用原因");
+        assert!(
+            snap.get("wan2").unwrap().blocked_reason.is_some(),
+            "缺设备必须给出不可用原因"
+        );
         assert!(!snap.get("wan2").unwrap().carries_normal_traffic());
         assert!(snap.get("wan1").unwrap().blocked_reason.is_none());
     }
@@ -1014,7 +1145,10 @@ mod tests {
         r.with(|m| {
             let t = m.get_mut("wan1").unwrap();
             for i in 0..3 {
-                t.record(&res(ProbeProto::Icmp, Outcome::Unsupported("无权限".into()), i), i);
+                t.record(
+                    &res(ProbeProto::Icmp, Outcome::Unsupported("无权限".into()), i),
+                    i,
+                );
             }
         });
         let d = probe_diagnostics(&cfg, &r.snapshot(10));
@@ -1025,7 +1159,11 @@ mod tests {
     #[test]
     fn probe_target_validation_reports_errors() {
         let mut cfg = cfg_wans(&["wan1"]);
-        cfg.wans[0].probe_targets = vec!["ok.example.com".into(), "1.1.1.1".into(), "bad domain".into()];
+        cfg.wans[0].probe_targets = vec![
+            "ok.example.com".into(),
+            "1.1.1.1".into(),
+            "bad domain".into(),
+        ];
         let mut rep = validate::Report::default();
         check_probe_targets(&cfg, &mut rep);
         assert!(!rep.is_valid(), "{rep:?}");

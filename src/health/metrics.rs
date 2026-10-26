@@ -37,10 +37,20 @@ pub struct Sample {
 
 impl Sample {
     pub fn success(at_ms: u64, rtt_ms: u32, proto: &'static str) -> Sample {
-        Sample { at_ms, rtt_ms, ok: true, proto }
+        Sample {
+            at_ms,
+            rtt_ms,
+            ok: true,
+            proto,
+        }
     }
     pub fn failure(at_ms: u64, proto: &'static str) -> Sample {
-        Sample { at_ms, rtt_ms: 0, ok: false, proto }
+        Sample {
+            at_ms,
+            rtt_ms: 0,
+            ok: false,
+            proto,
+        }
     }
 }
 
@@ -96,7 +106,10 @@ impl Default for SlidingWindow {
 
 impl SlidingWindow {
     pub fn new(capacity: usize) -> SlidingWindow {
-        SlidingWindow { samples: VecDeque::with_capacity(capacity.max(1)), capacity: capacity.max(1) }
+        SlidingWindow {
+            samples: VecDeque::with_capacity(capacity.max(1)),
+            capacity: capacity.max(1),
+        }
     }
 
     pub fn push(&mut self, s: Sample) {
@@ -139,7 +152,12 @@ impl SlidingWindow {
             return m;
         }
         m.samples = total;
-        let oks: Vec<u32> = self.samples.iter().filter(|s| s.ok).map(|s| s.rtt_ms).collect();
+        let oks: Vec<u32> = self
+            .samples
+            .iter()
+            .filter(|s| s.ok)
+            .map(|s| s.rtt_ms)
+            .collect();
         m.ok_samples = oks.len();
         m.loss_pmm = permille(total as u64 - oks.len() as u64, total as u64);
         for s in &self.samples {
@@ -164,7 +182,12 @@ impl SlidingWindow {
         m.p95_ms = sorted[idx.min(sorted.len() - 1)];
         // 抖动：相邻成功样本 RTT 差绝对值的平均（保持时间顺序，不按排序后的值算）。
         let mut diffs: Vec<u64> = Vec::new();
-        let seq: Vec<u32> = self.samples.iter().filter(|s| s.ok).map(|s| s.rtt_ms).collect();
+        let seq: Vec<u32> = self
+            .samples
+            .iter()
+            .filter(|s| s.ok)
+            .map(|s| s.rtt_ms)
+            .collect();
         for w in seq.windows(2) {
             diffs.push(w[0].abs_diff(w[1]) as u64);
         }
@@ -174,10 +197,14 @@ impl SlidingWindow {
         // 不稳定度：标准差 / 均值。
         let mean = sum as f64 / oks.len() as f64;
         if oks.len() > 1 && mean > 0.0 {
-            let var = oks.iter().map(|v| {
-                let d = *v as f64 - mean;
-                d * d
-            }).sum::<f64>() / (oks.len() - 1) as f64;
+            let var = oks
+                .iter()
+                .map(|v| {
+                    let d = *v as f64 - mean;
+                    d * d
+                })
+                .sum::<f64>()
+                / (oks.len() - 1) as f64;
             let sd = var.sqrt();
             m.instability_pmm = clamp_permille((sd / mean * 1000.0) as u64);
         }
@@ -186,7 +213,13 @@ impl SlidingWindow {
 
     /// 是否越过降级阈值。任一指标越线即为 degraded；样本不足时**不判降级**
     /// （否则刚启动就把线路标成 degraded，等于用噪声做决策）。
-    pub fn is_degraded(&self, now_ms: u64, rtt_limit: u32, loss_limit: u32, jitter_limit: u32) -> bool {
+    pub fn is_degraded(
+        &self,
+        now_ms: u64,
+        rtt_limit: u32,
+        loss_limit: u32,
+        jitter_limit: u32,
+    ) -> bool {
         let m = self.metrics(now_ms);
         if !m.confident() {
             return false;
@@ -230,7 +263,11 @@ pub struct Ewma {
 
 impl Ewma {
     pub fn new(alpha_permille: u32) -> Ewma {
-        Ewma { value: 0.0, initialized: false, alpha_permille: alpha_permille.clamp(1, 1000) }
+        Ewma {
+            value: 0.0,
+            initialized: false,
+            alpha_permille: alpha_permille.clamp(1, 1000),
+        }
     }
 
     pub fn push(&mut self, x: f64) -> f64 {
@@ -309,7 +346,10 @@ mod tests {
             w2.push(ok(i as u64, *rtt));
         }
         let m2 = w2.metrics(100);
-        assert!(m2.instability_pmm > m.instability_pmm * 3, "{m:?} vs {m2:?}");
+        assert!(
+            m2.instability_pmm > m.instability_pmm * 3,
+            "{m:?} vs {m2:?}"
+        );
         assert!(m2.jitter_ms > 100, "{m2:?}");
         assert_eq!(m2.min_ms, 20);
         assert_eq!(m2.max_ms, 400);
@@ -338,7 +378,10 @@ mod tests {
         for i in 0..3 {
             w.push(ok(i, 900));
         }
-        assert!(!w.is_degraded(10, 150, 50, 40), "样本不足时不能用降级污染状态");
+        assert!(
+            !w.is_degraded(10, 150, 50, 40),
+            "样本不足时不能用降级污染状态"
+        );
         w.push(ok(3, 900));
         w.push(ok(4, 900));
         assert!(w.is_degraded(10, 150, 50, 40), "RTT 超限必须判降级");

@@ -105,9 +105,8 @@ impl Store {
         // 先备份再原子写：出错时用户可以立刻回退到上一版意图。
         if self.path.exists() {
             let bak = backup_path(&self.path);
-            std::fs::copy(&self.path, &bak).map_err(|e| {
-                Error::Config(format!("备份 {} 失败: {e}", bak.display()))
-            })?;
+            std::fs::copy(&self.path, &bak)
+                .map_err(|e| Error::Config(format!("备份 {} 失败: {e}", bak.display())))?;
         }
         uci::write_atomic(&self.path, &text)?;
         self.raw = rendered;
@@ -168,17 +167,9 @@ pub fn migrate(file: &mut UciFile, notes: &mut Vec<String>) -> Result<()> {
     // 逐版本前滚
     let renames: &[&[(u32, &str, &str)]] = &[
         // v1 -> v2：早期字段命名与现在不一致
-        &[(
-            1,
-            "primary_interface",
-            "primary",
-        )],
+        &[(1, "primary_interface", "primary")],
         &[(2, "lb_mode", "mode"), (2, "lb_algorithm", "algorithm")],
-        &[(
-            3,
-            "failback_enabled",
-            "failback",
-        )],
+        &[(3, "failback_enabled", "failback")],
     ];
     for table in renames {
         let (from_ver, old_key, new_key) = table[0];
@@ -207,10 +198,7 @@ pub fn migrate(file: &mut UciFile, notes: &mut Vec<String>) -> Result<()> {
         }
     }
     file.sections[global].set_option("config_version", &crate::CONFIG_SCHEMA_VERSION.to_string());
-    notes.push(format!(
-        "配置版本 {ver} → {}",
-        crate::CONFIG_SCHEMA_VERSION
-    ));
+    notes.push(format!("配置版本 {ver} → {}", crate::CONFIG_SCHEMA_VERSION));
     Ok(())
 }
 
@@ -371,10 +359,9 @@ fn decode_wan(sec: &Section, global_health: &HealthConfig) -> Result<WanConfig> 
 
 fn decode_game(sec: &Section) -> Result<GameRule> {
     let d = GameRule::default();
-    let name = sec
-        .name
-        .clone()
-        .ok_or_else(|| Error::Validate("config game 段必须具名（用于规则定位与冲突提示）".into()))?;
+    let name = sec.name.clone().ok_or_else(|| {
+        Error::Validate("config game 段必须具名（用于规则定位与冲突提示）".into())
+    })?;
     Ok(GameRule {
         name,
         enabled: boolean(sec, "enabled", d.enabled),
@@ -461,7 +448,10 @@ fn encode_global(sec: &mut Section, g: &GlobalConfig) {
     sec.set_option("buckets", &g.buckets.to_string());
     encode_health(sec, &g.health);
     sec.set_option("sample_window_ms", &g.sample_window_ms.to_string());
-    sec.set_option("rebalance_interval_ms", &g.rebalance_interval_ms.to_string());
+    sec.set_option(
+        "rebalance_interval_ms",
+        &g.rebalance_interval_ms.to_string(),
+    );
     sec.set_option("smoothing_permille", &g.smoothing_permille.to_string());
     sec.set_option(
         "max_connections_per_wan",
@@ -489,7 +479,10 @@ fn encode_health(sec: &mut Section, h: &HealthConfig) {
     sec.set_option("degraded_rtt_ms", &h.degraded_rtt_ms.to_string());
     sec.set_option("degraded_loss_pmm", &h.degraded_loss_pmm.to_string());
     sec.set_option("degraded_jitter_ms", &h.degraded_jitter_ms.to_string());
-    sec.set_option("max_concurrent_probes", &h.max_concurrent_probes.to_string());
+    sec.set_option(
+        "max_concurrent_probes",
+        &h.max_concurrent_probes.to_string(),
+    );
 }
 
 fn encode_wan(sec: &mut Section, w: &WanConfig) {
@@ -535,7 +528,10 @@ fn encode_score(sec: &mut Section, s: &ScoreWeights) {
     sec.set_option("rtt_norm_ms", &s.rtt_norm_ms.to_string());
     sec.set_option("jitter_norm_ms", &s.jitter_norm_ms.to_string());
     sec.set_option("loss_norm_pmm", &s.loss_norm_pmm.to_string());
-    sec.set_option("min_advantage_permille", &s.min_advantage_permille.to_string());
+    sec.set_option(
+        "min_advantage_permille",
+        &s.min_advantage_permille.to_string(),
+    );
     sec.set_option("min_stable_ms", &s.min_stable_ms.to_string());
 }
 
@@ -551,7 +547,11 @@ fn set_or_clear(sec: &mut Section, key: &str, value: &str) {
 /// 并删除本次不再存在的 wan/game 段。
 pub fn encode_into(mut file: UciFile, cfg: &Config) -> UciFile {
     // global
-    match file.sections.iter_mut().find(|s| s.stype == T_GLOBAL && s.name.as_deref() == Some("global")) {
+    match file
+        .sections
+        .iter_mut()
+        .find(|s| s.stype == T_GLOBAL && s.name.as_deref() == Some("global"))
+    {
         Some(sec) => encode_global(sec, &cfg.global),
         None => {
             let mut sec = Section {
@@ -579,10 +579,14 @@ pub fn encode_into(mut file: UciFile, cfg: &Config) -> UciFile {
     // wan/game：按名称匹配既有段（保序保注释），缺少的追加，多余删除
     let wan_items: Vec<(String, &WanConfig)> =
         cfg.wans.iter().map(|w| (w.name.clone(), w)).collect();
-    sync_sections(&mut file, T_WAN, &wan_items, &mut |sec, w| encode_wan(sec, w));
+    sync_sections(&mut file, T_WAN, &wan_items, &mut |sec, w| {
+        encode_wan(sec, w)
+    });
     let game_items: Vec<(String, &GameRule)> =
         cfg.games.iter().map(|g| (g.name.clone(), g)).collect();
-    sync_sections(&mut file, T_GAME, &game_items, &mut |sec, g| encode_game(sec, g));
+    sync_sections(&mut file, T_GAME, &game_items, &mut |sec, g| {
+        encode_game(sec, g)
+    });
     file
 }
 
@@ -656,7 +660,7 @@ impl Store {
                     "config",
                     "load_applied",
                     Error::Config(format!("已应用快照损坏: {e}")),
-                    &[("path".into(), p.display().to_string())],
+                    &[("path", p.display().to_string())],
                 );
                 None
             }
@@ -669,9 +673,8 @@ impl Store {
             .map_err(|e| Error::Config(format!("无法创建状态目录 {}: {e}", state_dir.display())))?;
         let p = Self::applied_path(state_dir);
         if p.exists() {
-            std::fs::copy(&p, format!("{}.last-good", p.display())).map_err(|e| {
-                Error::Config(format!("备份已应用快照失败: {e}"))
-            })?;
+            std::fs::copy(&p, format!("{}.last-good", p.display()))
+                .map_err(|e| Error::Config(format!("备份已应用快照失败: {e}")))?;
         }
         let a = Applied {
             fingerprint: fingerprint(cfg),
@@ -810,16 +813,44 @@ pub fn diff(old: &Config, new: &Config) -> Vec<Change> {
             }),
             Some(o) => {
                 if o.enabled != w.enabled {
-                    cmp_wan(&mut out, &w.name, "enabled", o.enabled.to_string(), w.enabled.to_string(), true);
+                    cmp_wan(
+                        &mut out,
+                        &w.name,
+                        "enabled",
+                        o.enabled.to_string(),
+                        w.enabled.to_string(),
+                        true,
+                    );
                 }
                 if o.role != w.role {
-                    cmp_wan(&mut out, &w.name, "role", o.role.as_str().into(), w.role.as_str().into(), true);
+                    cmp_wan(
+                        &mut out,
+                        &w.name,
+                        "role",
+                        o.role.as_str().into(),
+                        w.role.as_str().into(),
+                        true,
+                    );
                 }
                 if o.weight != w.weight {
-                    cmp_wan(&mut out, &w.name, "weight", o.weight.to_string(), w.weight.to_string(), false);
+                    cmp_wan(
+                        &mut out,
+                        &w.name,
+                        "weight",
+                        o.weight.to_string(),
+                        w.weight.to_string(),
+                        false,
+                    );
                 }
                 if o.priority != w.priority {
-                    cmp_wan(&mut out, &w.name, "priority", o.priority.to_string(), w.priority.to_string(), false);
+                    cmp_wan(
+                        &mut out,
+                        &w.name,
+                        "priority",
+                        o.priority.to_string(),
+                        w.priority.to_string(),
+                        false,
+                    );
                 }
                 if o.probe_targets != w.probe_targets {
                     cmp_wan(
@@ -832,7 +863,14 @@ pub fn diff(old: &Config, new: &Config) -> Vec<Change> {
                     );
                 }
                 if o.device != w.device {
-                    cmp_wan(&mut out, &w.name, "device", o.device.clone(), w.device.clone(), true);
+                    cmp_wan(
+                        &mut out,
+                        &w.name,
+                        "device",
+                        o.device.clone(),
+                        w.device.clone(),
+                        true,
+                    );
                 }
             }
         }
@@ -998,7 +1036,11 @@ mod tests {
         bad.wans[0].name = "wan;evil".into(); // 非法段名
         let e = store.save(&bad).unwrap_err();
         assert!(matches!(e, Error::Validate(_)), "应报校验错误，实际 {e}");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "校验失败不得写盘");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "校验失败不得写盘"
+        );
     }
 
     #[test]
@@ -1011,7 +1053,10 @@ mod tests {
         let mut c2 = sample_cfg();
         c2.global.algorithm = Algorithm::SrcIp;
         store.save(&c2).unwrap();
-        assert!(dir.path().join("smartmwan.bak").exists(), "第二次保存必须先备份");
+        assert!(
+            dir.path().join("smartmwan.bak").exists(),
+            "第二次保存必须先备份"
+        );
     }
 
     #[test]
@@ -1029,7 +1074,11 @@ mod tests {
         };
         Store::store_applied(&state, &c2, "tx-2").unwrap();
         let restored = Store::restore_last_good(&state).unwrap().unwrap();
-        assert_eq!(restored.global.algorithm, Algorithm::SrcIpDstIp, "last-good 应是第一版");
+        assert_eq!(
+            restored.global.algorithm,
+            Algorithm::SrcIpDstIp,
+            "last-good 应是第一版"
+        );
         let cur = Store::load_applied(&state).unwrap();
         assert_eq!(cur.config.global.algorithm, Algorithm::LeastTraffic);
         assert_eq!(cur.fingerprint, fingerprint(&c2));
@@ -1057,7 +1106,9 @@ mod tests {
         assert!(d.iter().any(|c| c.path == "global.enabled" && c.risky));
         assert!(d.iter().any(|c| c.path == "global.primary" && c.risky));
         assert!(d.iter().any(|c| c.path == "wan[wan2].weight" && !c.risky));
-        assert!(d.iter().any(|c| c.path == "game[mygame]" && c.new == "(删除)"));
+        assert!(d
+            .iter()
+            .any(|c| c.path == "game[mygame]" && c.new == "(删除)"));
         // 无变化时摘要为空
         assert!(diff(&old, &old).is_empty());
     }
@@ -1080,7 +1131,8 @@ mod tests {
 
     #[test]
     fn migrate_rejects_future_version() {
-        let mut file = UciFile::parse("config smartmwan 'global'\n\toption config_version '999'\n").unwrap();
+        let mut file =
+            UciFile::parse("config smartmwan 'global'\n\toption config_version '999'\n").unwrap();
         let e = migrate(&mut file, &mut vec![]).unwrap_err();
         assert!(e.to_string().contains("高于支持"), "{e}");
     }

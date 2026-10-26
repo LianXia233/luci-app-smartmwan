@@ -77,7 +77,7 @@ impl Scored {
         let d_jit = f64::from(w.jitter) * jit_n;
         let d_loss = f64::from(w.loss) * loss_n;
         let d_inst = f64::from(w.instability) * inst_n;
-        let pen = extra_penalty.max(0.0).min(100.0);
+        let pen = extra_penalty.clamp(0.0, 100.0);
         let score = clamp_score(100.0 - d_rtt - d_jit - d_loss - d_inst - pen);
         Scored {
             name: name.to_string(),
@@ -110,7 +110,12 @@ impl Scored {
         if parts.is_empty() {
             format!("{}：{:.1} 分（无明显扣分）", self.name, self.score)
         } else {
-            format!("{}：{:.1} 分（{}）", self.name, self.score, parts.join("，"))
+            format!(
+                "{}：{:.1} 分（{}）",
+                self.name,
+                self.score,
+                parts.join("，")
+            )
         }
     }
 }
@@ -168,7 +173,13 @@ impl Picker {
     ///
     /// 候选必须是「此刻可用于低延迟流量」的线路（健康层已筛过），
     /// 本函数再按指标可信度筛一次，然后执行滞回。
-    pub fn pick(&mut self, rule: &str, mut ranking: Vec<Scored>, w: &ScoreWeights, now_ms: u64) -> Pick {
+    pub fn pick(
+        &mut self,
+        rule: &str,
+        mut ranking: Vec<Scored>,
+        w: &ScoreWeights,
+        now_ms: u64,
+    ) -> Pick {
         // 排序：分数降序 → 优先级稳定的名称升序，保证同样的输入永远同样的输出。
         ranking.sort_by(|a, b| {
             b.score
@@ -200,7 +211,8 @@ impl Picker {
         let current = self.chosen.get(rule).cloned();
         match &current {
             None => {
-                self.chosen.insert(rule.to_string(), (best.name.clone(), now_ms));
+                self.chosen
+                    .insert(rule.to_string(), (best.name.clone(), now_ms));
                 self.pending.remove(rule);
                 Pick {
                     chosen: Some(best.name.clone()),
@@ -230,10 +242,10 @@ impl Picker {
                     // 否则游戏流量会被「最小稳定时间」钉死在一条已经断掉的线路上。
                     let emergency = matches!(cur_state, Some(State::Failed) | Some(State::Unknown));
                     let adv = advantage_permille(best.score, cur_score);
-                    let gap_ok =
-                        emergency || cur_score <= 0.01 || adv >= i64::from(w.min_advantage_permille);
-                    let stable_ok =
-                        emergency || now_ms.saturating_sub(*since) >= w.min_stable_ms;
+                    let gap_ok = emergency
+                        || cur_score <= 0.01
+                        || adv >= i64::from(w.min_advantage_permille);
+                    let stable_ok = emergency || now_ms.saturating_sub(*since) >= w.min_stable_ms;
                     if !gap_ok {
                         self.pending.remove(rule);
                         return Pick {
@@ -259,7 +271,8 @@ impl Picker {
                         };
                     }
                     if emergency {
-                        self.chosen.insert(rule.to_string(), (best.name.clone(), now_ms));
+                        self.chosen
+                            .insert(rule.to_string(), (best.name.clone(), now_ms));
                         self.pending.remove(rule);
                         return Pick {
                             chosen: Some(best.name.clone()),
@@ -277,7 +290,8 @@ impl Picker {
                         .entry(rule.to_string())
                         .or_insert_with(|| Debounce::new(2, 0));
                     if d.offer(true, now_ms) {
-                        self.chosen.insert(rule.to_string(), (best.name.clone(), now_ms));
+                        self.chosen
+                            .insert(rule.to_string(), (best.name.clone(), now_ms));
                         self.pending.remove(rule);
                         Pick {
                             chosen: Some(best.name.clone()),
@@ -336,7 +350,14 @@ mod tests {
 
     #[test]
     fn best_case_is_100_and_worst_is_clamped() {
-        let good = Scored::evaluate("g", 1, State::Healthy, &metrics(0, 0, 0, 0), &weights(), 0.0);
+        let good = Scored::evaluate(
+            "g",
+            1,
+            State::Healthy,
+            &metrics(0, 0, 0, 0),
+            &weights(),
+            0.0,
+        );
         assert_eq!(good.score, 100.0, "{good:?}");
         let bad = Scored::evaluate(
             "b",
@@ -375,12 +396,7 @@ mod tests {
         let mut p = Picker::new();
         let mut m = metrics(20, 5, 0, 0);
         m.ok_samples = 2; // 不足 MIN_SAMPLES
-        let r = p.pick(
-            "rule",
-            vec![scored("wan1", 1, m.clone())],
-            &weights(),
-            1000,
-        );
+        let r = p.pick("rule", vec![scored("wan1", 1, m.clone())], &weights(), 1000);
         assert_eq!(r.chosen, None, "采样不足时不得伪造选择");
         assert!(r.reason.contains("不可信"), "{}", r.reason);
     }
@@ -457,7 +473,12 @@ mod tests {
     #[test]
     fn forget_clears_state() {
         let mut p = Picker::new();
-        p.pick("r1", vec![scored("a", 1, metrics(10, 1, 0, 0))], &weights(), 1);
+        p.pick(
+            "r1",
+            vec![scored("a", 1, metrics(10, 1, 0, 0))],
+            &weights(),
+            1,
+        );
         assert_eq!(p.rules(), vec!["r1".to_string()]);
         p.forget("r1");
         assert!(p.rules().is_empty());
@@ -470,12 +491,21 @@ mod tests {
         let a = scored("wanA", 1, metrics(50, 10, 0, 0));
         let b = scored("wanB", 2, metrics(50, 10, 0, 0));
         let c = scored("wanC", 3, metrics(120, 10, 0, 0));
-        let r1 = p.pick("rule", vec![a.clone(), b.clone(), c.clone()], &weights(), 1000);
+        let r1 = p.pick(
+            "rule",
+            vec![a.clone(), b.clone(), c.clone()],
+            &weights(),
+            1000,
+        );
         p.forget("rule");
         let r2 = p.pick("rule", vec![c, b, a], &weights(), 1000);
         assert_eq!(r1.chosen, r2.chosen, "同分时必须按名称稳定选择");
         assert_eq!(r1.chosen.as_deref(), Some("wanA"), "{r1:?}");
         let names: Vec<&str> = r1.ranking.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["wanA", "wanB", "wanC"], "排名必须降序且顺序确定");
+        assert_eq!(
+            names,
+            vec!["wanA", "wanB", "wanC"],
+            "排名必须降序且顺序确定"
+        );
     }
 }

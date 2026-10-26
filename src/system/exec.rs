@@ -48,8 +48,18 @@ const ALLOWED_PROGRAMS: &[&str] = &[
 /// 因此不可能通过测试通道放宽生产环境白名单。
 #[cfg(test)]
 const TEST_PROGRAMS: &[&str] = &[
-    "/bin/sleep", "/usr/bin/sleep", "/bin/cat", "/usr/bin/cat", "/bin/echo", "/usr/bin/echo",
-    "/bin/false", "/usr/bin/false", "/bin/true", "/usr/bin/true", "/bin/dd", "/usr/bin/dd",
+    "/bin/sleep",
+    "/usr/bin/sleep",
+    "/bin/cat",
+    "/usr/bin/cat",
+    "/bin/echo",
+    "/usr/bin/echo",
+    "/bin/false",
+    "/usr/bin/false",
+    "/bin/true",
+    "/usr/bin/true",
+    "/bin/dd",
+    "/usr/bin/dd",
     // 仅测试用：在白名单内、但设备上必然不存在的绝对路径，用来验证 spawn 失败
     // 走 Error::Exec 而不是 panic。
     "/bin/smw-definitely-missing",
@@ -126,7 +136,9 @@ impl Invocation {
         label: &str,
     ) -> Result<Invocation> {
         if program.is_empty() || !program.starts_with('/') {
-            return Err(Error::Permission(format!("拒绝执行非绝对路径命令: {program}")));
+            return Err(Error::Permission(format!(
+                "拒绝执行非绝对路径命令: {program}"
+            )));
         }
         if !allowed_set().contains(program) {
             return Err(Error::Permission(format!("命令不在白名单内: {program}")));
@@ -158,7 +170,12 @@ impl Invocation {
     }
 
     /// 用于 `nft -f`：把生成好的脚本文件（0600，位于 state_dir）交给 nft。
-    pub fn nft_file(nft: &str, file: &Path, check_only: bool, timeout: Duration) -> Result<Invocation> {
+    pub fn nft_file(
+        nft: &str,
+        file: &Path,
+        check_only: bool,
+        timeout: Duration,
+    ) -> Result<Invocation> {
         let flag = if check_only { "-c" } else { "-f" };
         let path = file
             .to_str()
@@ -193,9 +210,17 @@ impl Outcome {
             self.status,
             self.elapsed_ms,
             self.stdout.len(),
-            if self.stdout_truncated { "(截断)" } else { "" },
+            if self.stdout_truncated {
+                "(截断)"
+            } else {
+                ""
+            },
             self.stderr.len(),
-            if self.stderr_truncated { "(截断)" } else { "" },
+            if self.stderr_truncated {
+                "(截断)"
+            } else {
+                ""
+            },
         )
     }
 }
@@ -211,7 +236,10 @@ pub async fn run(inv: &Invocation) -> Result<Outcome> {
             return Err(logging::error_ctx(
                 "exec",
                 "spawn",
-                Error::Exec { cmd: inv.label.clone(), reason: msg },
+                Error::Exec {
+                    cmd: inv.label.clone(),
+                    reason: msg,
+                },
                 &[("program", inv.program.clone())],
             ));
         }
@@ -235,14 +263,20 @@ pub async fn run(inv: &Invocation) -> Result<Outcome> {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
                 let elapsed = started.elapsed().as_millis() as u64;
-                return Err(Error::Timeout { operation: format!("exec:{}", inv.label), elapsed_ms: elapsed });
+                return Err(Error::Timeout {
+                    operation: format!("exec:{}", inv.label),
+                    elapsed_ms: elapsed,
+                });
             }
         };
 
     let status = match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
         Ok(Ok(st)) => st.code().unwrap_or(-1),
         Ok(Err(e)) => {
-            return Err(Error::Exec { cmd: inv.label.clone(), reason: format!("等待子进程失败: {e}") });
+            return Err(Error::Exec {
+                cmd: inv.label.clone(),
+                reason: format!("等待子进程失败: {e}"),
+            });
         }
         Err(_) => {
             let _ = child.kill().await;
@@ -275,8 +309,16 @@ pub async fn run_ok(inv: &Invocation) -> Result<Outcome> {
         } else {
             format!("退出码 {}", out.status)
         };
-        logging::warn_ctx("exec", "nonzero", &out.summary(), &[("label", out.label.clone())]);
-        return Err(Error::Exec { cmd: inv.label.clone(), reason });
+        logging::warn_ctx(
+            "exec",
+            "nonzero",
+            &out.summary(),
+            &[("label", out.label.clone())],
+        );
+        return Err(Error::Exec {
+            cmd: inv.label.clone(),
+            reason,
+        });
     }
     Ok(out)
 }
@@ -388,15 +430,24 @@ mod tests {
     #[test]
     fn rejects_shell_metacharacters_and_relative_paths() {
         // 相对路径、非白名单程序一律拒绝。
-        assert!(matches!(Invocation::new("sh", &["-c", "rm -rf /"], "x"), Err(Error::Permission(_))));
+        assert!(matches!(
+            Invocation::new("sh", &["-c", "rm -rf /"], "x"),
+            Err(Error::Permission(_))
+        ));
         assert!(matches!(
             Invocation::new("/bin/sh", &["-c", "id"], "x"),
             Err(Error::Permission(_))
         ));
         // 参数里的换行/NUL 被拒绝。
         let p = echo_program();
-        assert!(matches!(Invocation::new(&p, &["a\nb"], "x"), Err(Error::Validate(_))));
-        assert!(matches!(Invocation::new(&p, &["a\0b"], "x"), Err(Error::Validate(_))));
+        assert!(matches!(
+            Invocation::new(&p, &["a\nb"], "x"),
+            Err(Error::Validate(_))
+        ));
+        assert!(matches!(
+            Invocation::new(&p, &["a\0b"], "x"),
+            Err(Error::Validate(_))
+        ));
     }
 
     #[test]
@@ -419,7 +470,10 @@ mod tests {
     fn bounded_output_truncates_at_cap() {
         // 从 read_bounded 的纯函数层面验证：保留 cap 字节、置截断标记、不 panic。
         let big = vec![b'a'; 300_000];
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let (s, tr) = rt.block_on(read_bounded(&big[..], 1024));
         assert_eq!(s.len(), 1024);
         assert!(tr);
@@ -431,7 +485,10 @@ mod tests {
     #[test]
     fn lossy_conversion_never_panics_on_invalid_utf8() {
         let raw: Vec<u8> = vec![0xe4, 0x00, 0x41]; // 非法 UTF-8 序列
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let (s, _) = rt.block_on(read_bounded(&raw[..], 16));
         assert!(s.contains('A'));
     }
@@ -471,7 +528,9 @@ mod tests {
         .unwrap();
         let err = run(&inv).await.unwrap_err();
         match err {
-            Error::Timeout { elapsed_ms, .. } => assert!(elapsed_ms < 5000, "超时应立即返回，实测 {elapsed_ms}ms"),
+            Error::Timeout { elapsed_ms, .. } => {
+                assert!(elapsed_ms < 5000, "超时应立即返回，实测 {elapsed_ms}ms")
+            }
             other => panic!("期望 Timeout，得到 {other:?}"),
         }
         assert_eq!(err.code(), "timeout");
@@ -486,15 +545,26 @@ mod tests {
         if let Some(ddp) = dd {
             let mk = Invocation::with_options(
                 &ddp,
-                &["if=/dev/zero", &format!("of={}", file.display()), "bs=1024", "count=2048"],
+                &[
+                    "if=/dev/zero",
+                    &format!("of={}", file.display()),
+                    "bs=1024",
+                    "count=2048",
+                ],
                 Duration::from_secs(5),
                 4096,
                 "dd",
             )
             .unwrap();
             run_ok(&mk).await.unwrap();
-            let inv = Invocation::with_options(&cat, &[&file.display().to_string()], Duration::from_secs(10), 1024, "cat")
-                .unwrap();
+            let inv = Invocation::with_options(
+                &cat,
+                &[&file.display().to_string()],
+                Duration::from_secs(10),
+                1024,
+                "cat",
+            )
+            .unwrap();
             let out = run(&inv).await.unwrap();
             assert_eq!(out.stdout.len(), 1024);
             assert!(out.stdout_truncated);

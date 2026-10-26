@@ -59,7 +59,7 @@ impl Counts {
             out.insert(*slot, *cur as i64 - before);
         }
         for (slot, before) in &prev.per_slot {
-            out.entry(*slot).or_insert(-( *before as i64));
+            out.entry(*slot).or_insert(-(*before as i64));
         }
         out
     }
@@ -72,7 +72,11 @@ impl Counts {
             self.foreign,
             self.unmarked,
             self.total,
-            if self.truncated { "（达扫描上限，数据不完整）" } else { "" }
+            if self.truncated {
+                "（达扫描上限，数据不完整）"
+            } else {
+                ""
+            }
         )
     }
 }
@@ -134,11 +138,17 @@ pub fn scan_with_cap(proc_path: &Path, at_ms: u64, max_lines: usize) -> Result<C
         logging::error_ctx(
             "conntrack",
             "open",
-            Error::Io(std::io::Error::new(e.kind(), format!("打开 {} 失败: {e}", proc_path.display()))),
+            Error::Io(std::io::Error::new(
+                e.kind(),
+                format!("打开 {} 失败: {e}", proc_path.display()),
+            )),
             &[],
         )
     })?;
-    let mut c = Counts { at_ms, ..Default::default() };
+    let mut c = Counts {
+        at_ms,
+        ..Default::default()
+    };
     let reader = BufReader::with_capacity(32 * 1024, f);
     let mut lines = reader.lines();
     while let Some(line) = lines.next() {
@@ -216,16 +226,26 @@ mod tests {
     use super::*;
 
     fn own_mark(slot: u8, bucket: u16) -> String {
-        format!("0x{:08x}", marks::mark(slot, marks::CLASS_NORMAL, 1, bucket))
+        format!(
+            "0x{:08x}",
+            marks::mark(slot, marks::CLASS_NORMAL, 1, bucket)
+        )
     }
 
     #[test]
     fn mark_field_parses_hex_and_decimal() {
-        assert_eq!(parse_mark_field("ipv4 2 tcp 6 src=a mark=0x05000001 seen=1"), Some(0x05000001));
+        assert_eq!(
+            parse_mark_field("ipv4 2 tcp 6 src=a mark=0x05000001 seen=1"),
+            Some(0x05000001)
+        );
         assert_eq!(parse_mark_field("mark=83886081"), Some(83886081));
         // procfs 常在 mark 后紧跟 ` [` 之类的分隔，必须不受影响
         assert_eq!(parse_mark_field("mark=0x05000102 [LANG]"), Some(0x05000102));
-        assert_eq!(parse_mark_field("ipv4 2 udp 17 src=1.1.1.1"), None, "没有 mark 字段必须返回 None");
+        assert_eq!(
+            parse_mark_field("ipv4 2 udp 17 src=1.1.1.1"),
+            None,
+            "没有 mark 字段必须返回 None"
+        );
         // 没有 0x 前缀一律按十进制解释；非十进制的垃圾文本必须解析失败，
         // 绝不能「猜」成十六进制，否则会把别人的标记误算成自己的。
         assert_eq!(parse_mark_field("mark=abc"), None);
@@ -244,10 +264,19 @@ mod tests {
     fn scan_buckets_by_slot_and_separates_foreign_marks() {
         let dir = tempfile::TempDir::new().unwrap();
         let p = dir.path().join("nf_conntrack");
-        let lines = vec![
-            format!("ipv4 2 tcp 6 src=192.168.1.10 dst=1.1.1.1 mark={} ", own_mark(1, 3)),
-            format!("ipv4 2 udp 17 src=192.168.1.11 dst=2.2.2.2 mark={}", own_mark(1, 9)),
-            format!("ipv4 2 tcp 6 src=192.168.1.12 dst=3.3.3.3 mark={}", own_mark(2, 0)),
+        let lines = [
+            format!(
+                "ipv4 2 tcp 6 src=192.168.1.10 dst=1.1.1.1 mark={} ",
+                own_mark(1, 3)
+            ),
+            format!(
+                "ipv4 2 udp 17 src=192.168.1.11 dst=2.2.2.2 mark={}",
+                own_mark(1, 9)
+            ),
+            format!(
+                "ipv4 2 tcp 6 src=192.168.1.12 dst=3.3.3.3 mark={}",
+                own_mark(2, 0)
+            ),
             "ipv4 2 tcp 6 src=172.16.0.5 dst=4.4.4.4 mark=0x000000aa".to_string(),
             "ipv4 2 tcp 6 src=172.16.0.6 dst=5.5.5.5 mark=0x00000000".to_string(),
             "ipv4 2 tcp 6 src=172.16.0.7 dst=6.6.6.6".to_string(),
@@ -293,7 +322,10 @@ mod tests {
         assert_eq!(l.used_permille(), 800);
         assert!(!l.tight());
         std::fs::write(dir.path().join("nf_conntrack_count"), "4600\n").unwrap();
-        assert!(read_limits(dir.path()).unwrap().tight(), "接近容量上限必须提前告警");
+        assert!(
+            read_limits(dir.path()).unwrap().tight(),
+            "接近容量上限必须提前告警"
+        );
         // 文件缺失 → None（上层负责说明），而不是 panic 或返回 0
         assert!(read_limits(&dir.path().join("nowhere")).is_none());
     }

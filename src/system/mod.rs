@@ -23,9 +23,9 @@ use std::path::{Path, PathBuf};
 
 use crate::config::schema::{Config, WanConfig};
 use crate::config::validate::{Issue, Severity};
+use crate::logging;
 use crate::marks;
 use crate::system::interface::{Resolved, SysFs, Topology, TrafficSample};
-use crate::logging;
 use crate::system::netlink::{AddrEntry, Family, RouteEntry, RouteOps, RuleEntry};
 use crate::system::route::{Applier, Desired, Diff, MirrorSet, WanTarget};
 use crate::{Error, Result};
@@ -74,7 +74,10 @@ pub struct Env {
 
 impl Default for Env {
     fn default() -> Env {
-        Env { etc_dir: PathBuf::from("/etc"), sysfs: SysFs::default() }
+        Env {
+            etc_dir: PathBuf::from("/etc"),
+            sysfs: SysFs::default(),
+        }
     }
 }
 
@@ -104,7 +107,10 @@ fn read_uci(path: &Path, what: &str, warnings: &mut Vec<String>) -> Result<Strin
     match std::fs::read_to_string(path) {
         Ok(s) => Ok(s),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            warnings.push(format!("找不到 {what} 配置（{}），相关检查跳过", path.display()));
+            warnings.push(format!(
+                "找不到 {what} 配置（{}），相关检查跳过",
+                path.display()
+            ));
             Ok(String::new())
         }
         Err(e) => Err(Error::Config(format!("读取 {} 失败: {e}", path.display()))),
@@ -142,13 +148,22 @@ impl Observation {
     }
 
     pub fn families(enable_ipv6: bool) -> Vec<Family> {
-        if enable_ipv6 { vec![Family::V4, Family::V6] } else { vec![Family::V4] }
+        if enable_ipv6 {
+            vec![Family::V4, Family::V6]
+        } else {
+            vec![Family::V4]
+        }
     }
 
     /// 某线路是否已经具备可用出口（调度器的硬前置条件）。
     pub fn usable(&self, name: &str) -> bool {
         match self.slots.get(name) {
-            Some(slot) => self.targets.iter().find(|t| t.slot == *slot).map(|t| t.usable_v4()).unwrap_or(false),
+            Some(slot) => self
+                .targets
+                .iter()
+                .find(|t| t.slot == *slot)
+                .map(|t| t.usable_v4())
+                .unwrap_or(false),
             None => false,
         }
     }
@@ -179,7 +194,10 @@ pub async fn observe_async(
 /// 异步提交：先应用差量，再重新 dump 校验。
 ///
 /// `on_conflict` 拿到的 issue 只作展示；返回 Err 时事务层负责回滚配置。
-pub async fn commit_async(ob: &Observation, handle: &netlink::NetlinkHandle) -> Result<CommitReport> {
+pub async fn commit_async(
+    ob: &Observation,
+    handle: &netlink::NetlinkHandle,
+) -> Result<CommitReport> {
     let diff = ob.diff.clone();
     let desired = ob.desired.clone();
     let handle = handle.clone();
@@ -201,7 +219,10 @@ pub struct CommitReport {
 
 impl CommitReport {
     pub fn verified(&self) -> bool {
-        !self.verify_issues.iter().any(|i| i.severity == Severity::Error)
+        !self
+            .verify_issues
+            .iter()
+            .any(|i| i.severity == Severity::Error)
     }
 }
 
@@ -229,14 +250,22 @@ pub fn commit_with(ops: &dyn RouteOps, diff: &Diff, desired: &Desired) -> Result
     let verify_issues = applier.verify(desired)?;
     for i in &verify_issues {
         logging::log(
-            if i.severity == Severity::Error { logging::Level::Error } else { logging::Level::Warn },
+            if i.severity == Severity::Error {
+                logging::Level::Error
+            } else {
+                logging::Level::Warn
+            },
             "system",
             "verify",
             &i.message,
             &[("path", i.path.clone())],
         );
     }
-    Ok(CommitReport { summary, applied: !diff.is_empty(), verify_issues })
+    Ok(CommitReport {
+        summary,
+        applied: !diff.is_empty(),
+        verify_issues,
+    })
 }
 
 /// 观察：读配置 → dump 内核 → 解析线路 → 生成期望 → 算差量 → 审计冲突。
@@ -258,10 +287,15 @@ pub fn observe(cfg: &Config, env: &Env, ops: &dyn RouteOps) -> Result<Observatio
             Err(e) => ob.warnings.push(format!("{name} 规则 dump 失败: {e}")),
         }
         // 镜像路由的来源：main 表（直连/默认）与 local 表（本机地址）
-        for table in [netlink::RT_TABLE_MAIN as u32, netlink::RT_TABLE_LOCAL as u32] {
+        for table in [
+            netlink::RT_TABLE_MAIN as u32,
+            netlink::RT_TABLE_LOCAL as u32,
+        ] {
             match ops.dump_routes(f, table) {
                 Ok(v) => ob.routes.extend(v),
-                Err(e) => ob.warnings.push(format!("{name} 路由表 {table} dump 失败: {e}")),
+                Err(e) => ob
+                    .warnings
+                    .push(format!("{name} 路由表 {table} dump 失败: {e}")),
             }
         }
         match ops.dump_addresses(f) {
@@ -274,12 +308,15 @@ pub fn observe(cfg: &Config, env: &Env, ops: &dyn RouteOps) -> Result<Observatio
         for slot in ob.slots.values() {
             match ops.dump_routes(f, marks::table_of(*slot)) {
                 Ok(v) => ob.routes.extend(v),
-                Err(e) => ob.warnings.push(format!("dump 表 {} 失败: {e}", marks::table_of(*slot))),
+                Err(e) => ob
+                    .warnings
+                    .push(format!("dump 表 {} 失败: {e}", marks::table_of(*slot))),
             }
         }
     }
 
-    let (resolved, errs) = interface::resolve_all(&cfg.wans, &ob.topo, ops, &env.sysfs, cfg.global.enable_ipv6);
+    let (resolved, errs) =
+        interface::resolve_all(&cfg.wans, &ob.topo, ops, &env.sysfs, cfg.global.enable_ipv6);
     ob.resolved = resolved;
     ob.resolve_errors = errs;
 
@@ -287,10 +324,14 @@ pub fn observe(cfg: &Config, env: &Env, ops: &dyn RouteOps) -> Result<Observatio
     let mut wans_sorted: Vec<&WanConfig> = cfg.wans.iter().filter(|w| w.enabled).collect();
     wans_sorted.sort_by(|a, b| a.name.cmp(&b.name));
     for w in wans_sorted {
-        let Some(slot) = ob.slots.get(&w.name) else { continue };
+        let Some(slot) = ob.slots.get(&w.name) else {
+            continue;
+        };
         match ob.resolved.get(&w.name) {
             Some(r) => ob.targets.push(r.to_target(*slot)),
-            None => ob.warnings.push(format!("线路 {} 无法解析，本轮不参与选路", w.name)),
+            None => ob
+                .warnings
+                .push(format!("线路 {} 无法解析，本轮不参与选路", w.name)),
         }
     }
 
@@ -315,7 +356,8 @@ pub fn observe(cfg: &Config, env: &Env, ops: &dyn RouteOps) -> Result<Observatio
     // 审计：内核里规则之间的关系 + main 表默认路由是否存在
     for f in families.iter().copied() {
         let main_default = interface::has_main_default(&ob.routes, f);
-        ob.issues.extend(route::audit_conflicts(&ob.rules, main_default, f));
+        ob.issues
+            .extend(route::audit_conflicts(&ob.rules, main_default, f));
     }
 
     // NAT/回程一致性检查（任务书第八节）
@@ -324,7 +366,10 @@ pub fn observe(cfg: &Config, env: &Env, ops: &dyn RouteOps) -> Result<Observatio
             severity: Severity::Warning,
             path: "firewall.nat".into(),
             message: w,
-            hint: Some("在 /etc/config/firewall 对应 zone 里开启 masq，或改用与运营商匹配的接入方式".into()),
+            hint: Some(
+                "在 /etc/config/firewall 对应 zone 里开启 masq，或改用与运营商匹配的接入方式"
+                    .into(),
+            ),
         });
     }
     // 线路解析失败也是 issue（必须显示，不能只进日志）
@@ -333,7 +378,9 @@ pub fn observe(cfg: &Config, env: &Env, ops: &dyn RouteOps) -> Result<Observatio
             severity: Severity::Warning,
             path: format!("wan.{}.device", name),
             message: format!("线路 {name} 解析失败: {reason}"),
-            hint: Some("确认设备名/接口名、是否已拨号，或在该线路上手工填写 gateway 与 src_ip".into()),
+            hint: Some(
+                "确认设备名/接口名、是否已拨号，或在该线路上手工填写 gateway 与 src_ip".into(),
+            ),
         });
     }
     // 其它线路备注（链路未 up、没有默认路由等）
@@ -351,15 +398,17 @@ pub fn observe(cfg: &Config, env: &Env, ops: &dyn RouteOps) -> Result<Observatio
     Ok(ob)
 }
 
-
-
 /// 只读地采样流量（`连接与流量` 页与最少流量算法用）。
 pub fn sample(cfg: &Config, env: &Env, at_ms: u64) -> TrafficSample {
     let mut devices: Vec<String> = Vec::new();
     for w in cfg.wans.iter().filter(|w| w.enabled) {
         // 优先用配置里显式写的设备；没写时 netifd 的约定是「接口段名即设备名」，
         // 对不上的话采样结果是 0，UI 会显示「无计数器数据」而不是编造速率。
-        let d = if w.device.is_empty() { w.name.clone() } else { w.device.clone() };
+        let d = if w.device.is_empty() {
+            w.name.clone()
+        } else {
+            w.device.clone()
+        };
         if !devices.contains(&d) {
             devices.push(d);
         }
@@ -373,13 +422,16 @@ mod tests {
     use crate::config::schema::WanConfig;
     use crate::system::netlink::FakeNetlink;
     use crate::system::netlink::{
-                        RT_SCOPE_HOST, RT_SCOPE_LINK, RT_TABLE_LOCAL, RT_TABLE_MAIN, RTN_LOCAL,
-                        RTN_UNICAST,
+        RTN_LOCAL, RTN_UNICAST, RT_SCOPE_HOST, RT_SCOPE_LINK, RT_TABLE_LOCAL, RT_TABLE_MAIN,
     };
     use std::net::IpAddr;
 
     fn wan(name: &str, enabled: bool) -> WanConfig {
-        WanConfig { name: name.into(), enabled, ..Default::default() }
+        WanConfig {
+            name: name.into(),
+            enabled,
+            ..Default::default()
+        }
     }
 
     fn ip(s: &str) -> IpAddr {
@@ -400,7 +452,9 @@ mod tests {
 
     #[test]
     fn too_many_enabled_wans_is_rejected() {
-        let w: Vec<WanConfig> = (0..=marks::MAX_WANS).map(|i| wan(&format!("w{i}"), true)).collect();
+        let w: Vec<WanConfig> = (0..=marks::MAX_WANS)
+            .map(|i| wan(&format!("w{i}"), true))
+            .collect();
         let e = assign_slots(&w).unwrap_err();
         assert!(matches!(e, Error::Validate(_)));
         assert!(e.to_string().contains("上限"));
@@ -417,7 +471,10 @@ mod tests {
         assert_eq!(t.len(), marks::MAX_WANS as usize);
         assert_eq!(t[0], marks::TABLE_BASE + 1);
         assert_eq!(t[23], marks::TABLE_BASE + 24);
-        assert!(t.iter().all(|x| *x < RT_TABLE_LOCAL as u32), "不能碰到 253/254/255");
+        assert!(
+            t.iter().all(|x| *x < RT_TABLE_LOCAL as u32),
+            "不能碰到 253/254/255"
+        );
     }
 
     /// 造一个可控环境：<tmp>/config/{network,firewall} + <tmp>/net/<dev>
@@ -454,7 +511,13 @@ mod tests {
             std::fs::write(d.join("statistics/rx_bytes"), "10\n").unwrap();
             std::fs::write(d.join("statistics/tx_bytes"), "20\n").unwrap();
         }
-        Fixture { _dir: dir, env: Env { etc_dir: etc, sysfs: SysFs::new(&net) } }
+        Fixture {
+            _dir: dir,
+            env: Env {
+                etc_dir: etc,
+                sysfs: SysFs::new(&net),
+            },
+        }
     }
 
     fn cfg_two_wans() -> Config {
@@ -462,13 +525,34 @@ mod tests {
         c.global.enable_ipv6 = false;
         c.global.lan_zones = vec!["lan".into()];
         c.wans = vec![
-            WanConfig { name: "wan".into(), enabled: true, ..Default::default() },
-            WanConfig { name: "wan_5g".into(), enabled: true, ..Default::default() },
+            WanConfig {
+                name: "wan".into(),
+                enabled: true,
+                ..Default::default()
+            },
+            WanConfig {
+                name: "wan_5g".into(),
+                enabled: true,
+                ..Default::default()
+            },
         ];
         c
     }
 
-    fn route(family: Family, table: u32, dst: Option<IpAddr>, len: u8, gw: Option<IpAddr>, oif: u32, kind: u8, scope: u8) -> RouteEntry {
+    /// 测试夹具：按 `ip route` 转储的字段顺序构造路由条目。
+    /// 位置参数多确实可读性差，但调用点只有 5 处且刻意与内核转储一一对应，
+    /// 改成具名构造反而会让夹具比被测逻辑更长。
+    #[allow(clippy::too_many_arguments)]
+    fn route(
+        family: Family,
+        table: u32,
+        dst: Option<IpAddr>,
+        len: u8,
+        gw: Option<IpAddr>,
+        oif: u32,
+        kind: u8,
+        scope: u8,
+    ) -> RouteEntry {
         RouteEntry {
             family,
             table,
@@ -488,11 +572,56 @@ mod tests {
     /// main 表 LAN 直连段。
     fn kernel_state() -> Vec<RouteEntry> {
         vec![
-            route(Family::V4, RT_TABLE_MAIN as u32, None, 0, Some(ip("10.0.0.1")), 4, RTN_UNICAST, RT_SCOPE_LINK),
-            route(Family::V4, RT_TABLE_MAIN as u32, None, 0, None, 7, RTN_UNICAST, RT_SCOPE_LINK),
-            route(Family::V4, RT_TABLE_MAIN as u32, Some(ip("192.168.1.0")), 24, None, 6, RTN_UNICAST, RT_SCOPE_LINK),
-            route(Family::V4, RT_TABLE_LOCAL as u32, Some(ip("192.168.1.1")), 32, None, 6, RTN_LOCAL, RT_SCOPE_HOST),
-            route(Family::V4, RT_TABLE_LOCAL as u32, Some(ip("10.0.0.2")), 32, None, 4, RTN_LOCAL, RT_SCOPE_HOST),
+            route(
+                Family::V4,
+                RT_TABLE_MAIN as u32,
+                None,
+                0,
+                Some(ip("10.0.0.1")),
+                4,
+                RTN_UNICAST,
+                RT_SCOPE_LINK,
+            ),
+            route(
+                Family::V4,
+                RT_TABLE_MAIN as u32,
+                None,
+                0,
+                None,
+                7,
+                RTN_UNICAST,
+                RT_SCOPE_LINK,
+            ),
+            route(
+                Family::V4,
+                RT_TABLE_MAIN as u32,
+                Some(ip("192.168.1.0")),
+                24,
+                None,
+                6,
+                RTN_UNICAST,
+                RT_SCOPE_LINK,
+            ),
+            route(
+                Family::V4,
+                RT_TABLE_LOCAL as u32,
+                Some(ip("192.168.1.1")),
+                32,
+                None,
+                6,
+                RTN_LOCAL,
+                RT_SCOPE_HOST,
+            ),
+            route(
+                Family::V4,
+                RT_TABLE_LOCAL as u32,
+                Some(ip("10.0.0.2")),
+                32,
+                None,
+                4,
+                RTN_LOCAL,
+                RT_SCOPE_HOST,
+            ),
         ]
     }
 
@@ -509,7 +638,8 @@ mod tests {
         assert_eq!(
             ob.diff.add_routes.len(),
             8,
-            "每表 1 条默认路由 + 2 条本机 + 1 条 LAN 直连，两表共 8 条");
+            "每表 1 条默认路由 + 2 条本机 + 1 条 LAN 直连，两表共 8 条"
+        );
         assert!(!ob.blocked(), "issue: {:?}", ob.issues);
         assert_eq!(ob.mirror.connected, vec![(ip("192.168.1.0"), 24, 6)]);
         assert_eq!(ob.mirror.local.len(), 2);
@@ -525,9 +655,17 @@ mod tests {
         assert!(rpt.applied && rpt.verified(), "{rpt:?}");
         // 再来一次：差量必须为空，且不会重复安装（任务书「重启不产生重复规则」）
         let ob2 = observe(&cfg, &f.env, &fake).unwrap();
-        assert!(ob2.diff.is_empty(), "第二次观察应为空差量：{}", ob2.diff.summary());
+        assert!(
+            ob2.diff.is_empty(),
+            "第二次观察应为空差量：{}",
+            ob2.diff.summary()
+        );
         assert_eq!(ob2.rule_list_len(), 2);
-        let n_routes = fake.route_list().iter().filter(|r| r.in_our_table() && r.is_default()).count();
+        let n_routes = fake
+            .route_list()
+            .iter()
+            .filter(|r| r.in_our_table() && r.is_default())
+            .count();
         assert_eq!(n_routes, 2, "默认路由不能被重复安装");
     }
 
@@ -538,7 +676,11 @@ mod tests {
         std::fs::remove_dir_all(f.env.sysfs.root.join("wwan0")).unwrap();
         let fake = FakeNetlink::with_state(vec![], kernel_state(), vec![]);
         let ob = observe(&cfg_two_wans(), &f.env, &fake).unwrap();
-        assert_eq!(ob.targets.len(), 1, "掉线线路不参与选路，但另一条必须照常工作");
+        assert_eq!(
+            ob.targets.len(),
+            1,
+            "掉线线路不参与选路，但另一条必须照常工作"
+        );
         assert!(ob.resolve_errors.iter().any(|(n, _)| n == "wan_5g"));
         assert!(ob.issues.iter().any(|i| i.message.contains("wan_5g")));
         assert_eq!(ob.diff.add_rules.len(), 1);
@@ -567,7 +709,11 @@ mod tests {
         .unwrap();
         let fake = FakeNetlink::with_state(vec![], kernel_state(), vec![]);
         let ob = observe(&cfg_two_wans(), &f.env, &fake).unwrap();
-        let nat: Vec<_> = ob.issues.iter().filter(|i| i.path == "firewall.nat").collect();
+        let nat: Vec<_> = ob
+            .issues
+            .iter()
+            .filter(|i| i.path == "firewall.nat")
+            .collect();
         assert_eq!(nat.len(), 2, "两条线路都缺 masq");
         assert!(nat[0].message.contains("masq"));
     }
@@ -593,7 +739,10 @@ mod tests {
         assert!(ob.blocked(), "优先级被别人占用必须阻塞提交");
         assert!(ob.diff.blocking().is_some());
         assert!(
-            matches!(commit_with(&fake, &ob.diff, &ob.desired), Err(Error::Validate(_))),
+            matches!(
+                commit_with(&fake, &ob.diff, &ob.desired),
+                Err(Error::Validate(_))
+            ),
             "阻塞性冲突必须拒绝提交"
         );
     }
@@ -602,16 +751,29 @@ mod tests {
     fn observation_blocked_only_by_errors() {
         let mut ob = Observation::default();
         assert!(!ob.blocked());
-        ob.issues.push(Issue { severity: Severity::Warning, path: "x".into(), message: "m".into(), hint: None });
+        ob.issues.push(Issue {
+            severity: Severity::Warning,
+            path: "x".into(),
+            message: "m".into(),
+            hint: None,
+        });
         assert!(!ob.blocked(), "Warning 不阻塞提交");
-        ob.issues.push(Issue { severity: Severity::Error, path: "y".into(), message: "m".into(), hint: None });
+        ob.issues.push(Issue {
+            severity: Severity::Error,
+            path: "y".into(),
+            message: "m".into(),
+            hint: None,
+        });
         assert!(ob.blocked());
     }
 
     #[test]
     fn env_missing_files_warns_instead_of_erroring() {
         let dir = tempfile::TempDir::new().unwrap();
-        let env = Env { etc_dir: dir.path().join("etc"), sysfs: SysFs::new(dir.path().join("net")) };
+        let env = Env {
+            etc_dir: dir.path().join("etc"),
+            sysfs: SysFs::new(dir.path().join("net")),
+        };
         let mut warnings = Vec::new();
         let topo = env.load_topology(&mut warnings).unwrap();
         assert!(topo.interfaces.is_empty());
@@ -622,13 +784,28 @@ mod tests {
     #[test]
     fn sample_uses_configured_device() {
         let f = fixture();
-        let mut cfg = Config::default();
-        cfg.wans = vec![
-            WanConfig { name: "wan".into(), enabled: true, device: "eth1".into(), ..Default::default() },
-            WanConfig { name: "off".into(), enabled: false, ..Default::default() },
-            // 没写 device：按 netifd 约定用段名，取不到就是 0
-            WanConfig { name: "wan_5g".into(), enabled: true, ..Default::default() },
-        ];
+        let cfg = Config {
+            wans: vec![
+                WanConfig {
+                    name: "wan".into(),
+                    enabled: true,
+                    device: "eth1".into(),
+                    ..Default::default()
+                },
+                WanConfig {
+                    name: "off".into(),
+                    enabled: false,
+                    ..Default::default()
+                },
+                // 没写 device：按 netifd 约定用段名，取不到就是 0
+                WanConfig {
+                    name: "wan_5g".into(),
+                    enabled: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
         let s = sample(&cfg, &f.env, 999);
         assert_eq!(s.at_ms, 999);
         assert_eq!(s.per_device.get("eth1"), Some(&(10u64, 20u64)));
@@ -641,7 +818,11 @@ mod tests {
         // 沙箱/CI 里可能没有权限或不是 Linux；无论哪种都必须给出明确原因而不是 panic。
         if let Err(e) = open_netlink() {
             assert!(!e.to_string().is_empty());
-            assert!(e.code() == "netlink" || e.code() == "unsupported" || e.code() == "permission", "{}", e.code());
+            assert!(
+                e.code() == "netlink" || e.code() == "unsupported" || e.code() == "permission",
+                "{}",
+                e.code()
+            );
         }
     }
 

@@ -164,7 +164,6 @@ impl SystemProber {
             icmp_ok: std::sync::atomic::AtomicU8::new(ICMP_UNKNOWN),
         }
     }
-
 }
 
 impl Prober for SystemProber {
@@ -176,9 +175,10 @@ impl Prober for SystemProber {
         // `async move` 捕获的是 `&self`（一个引用值），因此返回的 future 生命周期
         // 与 `&self` 绑定，不需要额外把原子量再装箱一次。
         Box::pin(async move {
-            let _permit = self.sem.acquire().await.map_err(|_| {
-                Error::Config("探测并发信号量已关闭（守护进程正在退出）".into())
-            })?;
+            let _permit =
+                self.sem.acquire().await.map_err(|_| {
+                    Error::Config("探测并发信号量已关闭（守护进程正在退出）".into())
+                })?;
             // 域名先解析；解析失败是 LocalError，绝不能算成线路断线。
             let (addr, at_ms) = match resolve(&req).await {
                 Err(e) => return Ok(local_error(&req, e)),
@@ -191,7 +191,8 @@ impl Prober for SystemProber {
                     } else {
                         let o = icmp_probe(&req, addr).await;
                         if matches!(o, Outcome::Unsupported(_)) {
-                            self.icmp_ok.store(ICMP_DISABLED, std::sync::atomic::Ordering::Relaxed);
+                            self.icmp_ok
+                                .store(ICMP_DISABLED, std::sync::atomic::Ordering::Relaxed);
                             logging::warn_ctx(
                                 "health",
                                 "icmp-capability",
@@ -199,7 +200,8 @@ impl Prober for SystemProber {
                                 &[("wan", req.wan.clone()), ("reason", o.describe())],
                             );
                         } else {
-                            self.icmp_ok.store(ICMP_OK, std::sync::atomic::Ordering::Relaxed);
+                            self.icmp_ok
+                                .store(ICMP_OK, std::sync::atomic::Ordering::Relaxed);
                         }
                         o
                     }
@@ -208,7 +210,12 @@ impl Prober for SystemProber {
                 ProbeProto::Udp => udp_probe(&req, addr).await,
                 ProbeProto::Dns => dns_probe(&req, addr).await,
             };
-            Ok(ProbeResult { req, at_ms, outcome, resolved: Some(addr) })
+            Ok(ProbeResult {
+                req,
+                at_ms,
+                outcome,
+                resolved: Some(addr),
+            })
         })
     }
 }
@@ -273,7 +280,9 @@ fn try_bind_device<S: std::os::fd::AsFd>(sock: &S, device: &str) -> Option<Strin
             libc::SOL_SOCKET,
             25,
             name.as_ptr() as *const libc::c_void,
-            std::mem::size_of::<libc::c_int>() as libc::socklen_t + name.to_bytes_with_nul().len() as libc::socklen_t - 1,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t
+                + name.to_bytes_with_nul().len() as libc::socklen_t
+                - 1,
         )
     };
     if rc != 0 {
@@ -285,7 +294,11 @@ fn try_bind_device<S: std::os::fd::AsFd>(sock: &S, device: &str) -> Option<Strin
 
 /// TCP 连接探测：成功即 `rtt = connect 耗时`。
 async fn tcp_probe(req: &Request, addr: IpAddr) -> Outcome {
-    let port = if req.port == 0 { req.proto.default_port() } else { req.port };
+    let port = if req.port == 0 {
+        req.proto.default_port()
+    } else {
+        req.port
+    };
     let dst = SocketAddr::new(addr, port);
     let started = Instant::now();
     let sock = match addr {
@@ -311,7 +324,9 @@ async fn tcp_probe(req: &Request, addr: IpAddr) -> Outcome {
     match tokio::time::timeout(req.timeout, connect).await {
         Err(_) => Outcome::Timeout,
         Ok(Err(e)) => classify_io_error(&e),
-        Ok(Ok(_stream)) => Outcome::Reply { rtt_ms: elapsed_ms(started) },
+        Ok(Ok(_stream)) => Outcome::Reply {
+            rtt_ms: elapsed_ms(started),
+        },
     }
 }
 
@@ -320,7 +335,11 @@ async fn tcp_probe(req: &Request, addr: IpAddr) -> Outcome {
 /// 选择 DNS 的原因：很多线路屏蔽 ICMP 但不屏蔽 53；用它做「可达性 + 延迟」
 /// 比 TCP 连 443 更不容易被远端防火墙干扰。
 async fn dns_probe(req: &Request, addr: IpAddr) -> Outcome {
-    let port = if req.port == 0 { req.proto.default_port() } else { req.port };
+    let port = if req.port == 0 {
+        req.proto.default_port()
+    } else {
+        req.port
+    };
     let dst = SocketAddr::new(addr, port);
     let std_sock = match bind_local(addr, req.src) {
         Ok(s) => s,
@@ -351,7 +370,9 @@ async fn dns_probe(req: &Request, addr: IpAddr) -> Outcome {
         Ok(Err(e)) => classify_io_error(&e),
         Ok(Ok(n)) => {
             if n >= 12 && buf[0] == query[0] && buf[1] == query[1] {
-                Outcome::Reply { rtt_ms: elapsed_ms(started) }
+                Outcome::Reply {
+                    rtt_ms: elapsed_ms(started),
+                }
             } else {
                 // 事务 ID 不匹配：收到的是别人的响应或垃圾包，不能算成功。
                 Outcome::LocalError(format!("DNS 响应事务 ID 不匹配（{n} 字节）"))
@@ -367,7 +388,11 @@ async fn dns_probe(req: &Request, addr: IpAddr) -> Outcome {
 /// 目标不应答时结果就是 `Timeout`，会被计入线路失败——这不是缺陷，
 /// 而是用户选择该探测方式时必须知道的语义；推荐用 `dns` 代替。
 async fn udp_probe(req: &Request, addr: IpAddr) -> Outcome {
-    let port = if req.port == 0 { req.proto.default_port() } else { req.port };
+    let port = if req.port == 0 {
+        req.proto.default_port()
+    } else {
+        req.port
+    };
     let dst = SocketAddr::new(addr, port);
     let std_sock = match bind_local(addr, req.src) {
         Ok(s) => s,
@@ -395,7 +420,9 @@ async fn udp_probe(req: &Request, addr: IpAddr) -> Outcome {
         Err(_) => Outcome::Timeout,
         Ok(Err(e)) => classify_io_error(&e),
         Ok(Ok(0)) => Outcome::LocalError("收到空 UDP 数据报".into()),
-        Ok(Ok(_n)) => Outcome::Reply { rtt_ms: elapsed_ms(started) },
+        Ok(Ok(_n)) => Outcome::Reply {
+            rtt_ms: elapsed_ms(started),
+        },
     }
 }
 
@@ -411,7 +438,10 @@ async fn icmp_probe(req: &Request, addr: IpAddr) -> Outcome {
         let e = std::io::Error::last_os_error();
         // EPERM/EACCES/EAFNOSUPPORT 属于「探测方式不支持」，不是线路问题。
         return match e.raw_os_error() {
-            Some(libc::EPERM) | Some(libc::EACCES) | Some(libc::EAFNOSUPPORT) | Some(libc::EPROTONOSUPPORT) => {
+            Some(libc::EPERM)
+            | Some(libc::EACCES)
+            | Some(libc::EAFNOSUPPORT)
+            | Some(libc::EPROTONOSUPPORT) => {
                 Outcome::Unsupported(format!("创建 ICMP socket 失败: {e}"))
             }
             _ => Outcome::LocalError(format!("创建 ICMP socket 失败: {e}")),
@@ -463,7 +493,9 @@ async fn icmp_probe(req: &Request, addr: IpAddr) -> Outcome {
             Ok(Err(e)) => return classify_io_error(&e),
             Ok(Ok(n)) => {
                 if echo_reply_matches(&buf[..n], ident as u16) {
-                    return Outcome::Reply { rtt_ms: elapsed_ms(started) };
+                    return Outcome::Reply {
+                        rtt_ms: elapsed_ms(started),
+                    };
                 }
                 // 不是本请求的响应：继续等，直到批次超时为止。
             }
@@ -509,7 +541,9 @@ unsafe fn raw_bind(fd: i32, addr: SocketAddr) -> std::io::Result<()> {
             let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
             sa.sin_family = libc::AF_INET as libc::sa_family_t;
             sa.sin_port = a.port().to_be();
-            sa.sin_addr = libc::in_addr { s_addr: u32::from_ne_bytes(a.ip().octets()) };
+            sa.sin_addr = libc::in_addr {
+                s_addr: u32::from_ne_bytes(a.ip().octets()),
+            };
             libc::bind(
                 fd,
                 &sa as *const libc::sockaddr_in as *const libc::sockaddr,
@@ -520,7 +554,9 @@ unsafe fn raw_bind(fd: i32, addr: SocketAddr) -> std::io::Result<()> {
             let mut sa: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
             sa.sin6_family = libc::AF_INET6 as libc::sa_family_t;
             sa.sin6_port = a.port().to_be();
-            sa.sin6_addr = libc::in6_addr { s6_addr: a.ip().octets() };
+            sa.sin6_addr = libc::in6_addr {
+                s6_addr: a.ip().octets(),
+            };
             libc::bind(
                 fd,
                 &sa as *const libc::sockaddr_in6 as *const libc::sockaddr,
@@ -539,7 +575,10 @@ unsafe fn raw_bind(fd: i32, addr: SocketAddr) -> std::io::Result<()> {
 ///
 /// 失败时直接返回归类好的 [`Outcome`]：绑定失败可能是权限或地址问题，
 /// 绝不能伪装成「线路超时」。
-fn bind_local(dst: IpAddr, src: Option<IpAddr>) -> std::result::Result<std::net::UdpSocket, Outcome> {
+fn bind_local(
+    dst: IpAddr,
+    src: Option<IpAddr>,
+) -> std::result::Result<std::net::UdpSocket, Outcome> {
     let want = local_for(dst, src);
     std::net::UdpSocket::bind(want)
         .map_err(|e| Outcome::LocalError(format!("绑定本地地址 {} 失败: {e}", want)))
@@ -553,21 +592,26 @@ fn elapsed_ms(start: Instant) -> u32 {
 fn classify_io_error(e: &std::io::Error) -> Outcome {
     match e.raw_os_error() {
         // 路由/网络不可达、连接被拒：是线路状态的一部分。
-        Some(libc::ENETUNREACH) | Some(libc::ENETDOWN) | Some(libc::EHOSTUNREACH) | Some(libc::ECONNREFUSED) => {
-            Outcome::Unreachable(e.to_string())
-        }
+        Some(libc::ENETUNREACH)
+        | Some(libc::ENETDOWN)
+        | Some(libc::EHOSTUNREACH)
+        | Some(libc::ECONNREFUSED) => Outcome::Unreachable(e.to_string()),
         Some(libc::ETIMEDOUT) => Outcome::Timeout,
         // 权限/地址族/参数错误：本机问题，绝不能计入断线。
-        Some(libc::EPERM) | Some(libc::EACCES) | Some(libc::EAFNOSUPPORT) | Some(libc::EINVAL) | Some(libc::ENOPROTOOPT) => {
-            Outcome::Unsupported(e.to_string())
-        }
+        Some(libc::EPERM)
+        | Some(libc::EACCES)
+        | Some(libc::EAFNOSUPPORT)
+        | Some(libc::EINVAL)
+        | Some(libc::ENOPROTOOPT) => Outcome::Unsupported(e.to_string()),
         _ => Outcome::LocalError(e.to_string()),
     }
 }
 
 /// 构造最小 DNS 查询（root，A 记录）。事务 ID 用固定值即可用于匹配。
 pub fn build_dns_query(name: &str) -> Vec<u8> {
-    let mut q = vec![0x4d, 0x73, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+    let mut q = vec![
+        0x4d, 0x73, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
     for label in name.split('.').filter(|l| !l.is_empty()) {
         let bytes = label.as_bytes();
         let len = bytes.len().min(63);
@@ -584,7 +628,16 @@ pub fn build_dns_query(name: &str) -> Vec<u8> {
 /// 但对某些内核版本/IPv6 路径显式计算更安全，写错也只是白算一次。
 pub fn build_echo_request(ident: u16, seq: u16, v6: bool) -> Vec<u8> {
     let ty: u8 = if v6 { 128 } else { 8 };
-    let mut p = vec![ty, 0, 0, 0, (ident >> 8) as u8, (ident & 0xff) as u8, (seq >> 8) as u8, (seq & 0xff) as u8];
+    let mut p = vec![
+        ty,
+        0,
+        0,
+        0,
+        (ident >> 8) as u8,
+        (ident & 0xff) as u8,
+        (seq >> 8) as u8,
+        (seq & 0xff) as u8,
+    ];
     // 负载带上时间戳友好的填充，方便 tcpdump 观察（不含敏感信息）。
     p.extend_from_slice(b"smartmwan-probe-0001");
     let cks = checksum(&p);
@@ -624,7 +677,11 @@ pub fn echo_reply_matches(buf: &[u8], ident: u16) -> bool {
 }
 
 /// 从 `Resolved` 造请求（源地址按族挑选）。
-pub fn request_for(res: &Resolved, target: Target, hc: &crate::config::schema::HealthConfig) -> Request {
+pub fn request_for(
+    res: &Resolved,
+    target: Target,
+    hc: &crate::config::schema::HealthConfig,
+) -> Request {
     let family_v6 = match &target {
         Target::Addr(a) => Family::of(*a) == Family::V6,
         // 域名在探测时才解析，先按 IPv4 预期挑选源地址；解析出 IPv6 后
@@ -674,10 +731,7 @@ pub async fn probe_batch<P: Prober + ?Sized>(
         set.spawn(async move {
             let fut = p.probe(r);
             // 超时的探测返回 `None`：不能装作「线路失败」，只能按未完成处理。
-            match tokio::time::timeout(batch_deadline, fut).await {
-                Ok(inner) => Some(inner),
-                Err(_) => None,
-            }
+            tokio::time::timeout(batch_deadline, fut).await.ok()
         });
     }
     let mut out = Vec::new();
@@ -704,9 +758,16 @@ pub async fn probe_batch<P: Prober + ?Sized>(
                     logging::warn_ctx("health", "probe-task", &format!("探测任务失败: {e}"), &[]);
                 }
                 Ok(None) => {
-                    logging::warn_ctx("health", "probe-batch", "单个探测超出批次期限，本条按未完成处理", &[]);
+                    logging::warn_ctx(
+                        "health",
+                        "probe-batch",
+                        "单个探测超出批次期限，本条按未完成处理",
+                        &[],
+                    );
                 }
-                Err(e) => logging::warn_ctx("health", "probe-join", &format!("探测任务被中止: {e}"), &[]),
+                Err(e) => {
+                    logging::warn_ctx("health", "probe-join", &format!("探测任务被中止: {e}"), &[])
+                }
             },
         }
     }
@@ -734,7 +795,10 @@ mod tests {
     #[test]
     fn checksum_matches_known_vectors() {
         // RFC 1071 示例：00 01 f2 03 f4 f5 f6 f7
-        assert_eq!(checksum(&[0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7]), 0x220d);
+        assert_eq!(
+            checksum(&[0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7]),
+            0x220d
+        );
         // 全零
         assert_eq!(checksum(&[]), 0xffff);
         // 奇数长度也必须可用
@@ -765,7 +829,10 @@ mod tests {
         assert!(echo_reply_matches(&reply, 0x1234));
         reply[0] = 8; // echo request 不是我们要的
         assert!(!echo_reply_matches(&reply, 0x1234));
-        assert!(!echo_reply_matches(&reply[0..4], 0x1234), "长度不足必须拒绝");
+        assert!(
+            !echo_reply_matches(&reply[0..4], 0x1234),
+            "长度不足必须拒绝"
+        );
         reply[0] = 0;
         assert!(!echo_reply_matches(&reply, 0x9999), "不同 ID 不能算命中");
         // 内核把 ID 写成 0 的情况（部分版本行为）也要接受，否则会把好线路判成超时
@@ -789,10 +856,18 @@ mod tests {
     fn outcome_taxonomy_is_explicit() {
         assert!(Outcome::Timeout.counts_as_line_failure());
         assert!(Outcome::Unreachable("x".into()).counts_as_line_failure());
-        assert!(!Outcome::Unsupported("no perms".into()).counts_as_line_failure(), "权限问题绝不能算成断线");
-        assert!(!Outcome::LocalError("dns fail".into()).counts_as_line_failure(), "解析失败不是线路故障");
+        assert!(
+            !Outcome::Unsupported("no perms".into()).counts_as_line_failure(),
+            "权限问题绝不能算成断线"
+        );
+        assert!(
+            !Outcome::LocalError("dns fail".into()).counts_as_line_failure(),
+            "解析失败不是线路故障"
+        );
         assert!(!Outcome::Reply { rtt_ms: 1 }.counts_as_line_failure());
-        assert!(Outcome::Unsupported("x".into()).describe().contains("不受支持"));
+        assert!(Outcome::Unsupported("x".into())
+            .describe()
+            .contains("不受支持"));
     }
 
     #[test]
@@ -844,7 +919,10 @@ mod tests {
         assert_eq!(r.device, "eth1");
         assert_eq!(r.timeout, Duration::from_millis(hc.timeout_ms as u64));
         let r6 = request_for(&res, Target::Addr("2606:4700::1".parse().unwrap()), &hc);
-        assert_eq!(r6.src.map(|a| a.to_string()), Some("2001:db8::2".to_string()));
+        assert_eq!(
+            r6.src.map(|a| a.to_string()),
+            Some("2001:db8::2".to_string())
+        );
         res.src4 = None;
         let r2 = request_for(&res, Target::Domain("example.com".into()), &hc);
         assert_eq!(r2.src, None, "没有可用源地址时交给内核，不编造");
@@ -859,7 +937,11 @@ mod tests {
 
     impl FakeProber {
         fn new(max: usize, delay_ms: u64, outcome: Outcome) -> FakeProber {
-            FakeProber { delay: Duration::from_millis(delay_ms), outcome, sem: Arc::new(Semaphore::new(max)) }
+            FakeProber {
+                delay: Duration::from_millis(delay_ms),
+                outcome,
+                sem: Arc::new(Semaphore::new(max)),
+            }
         }
     }
 
@@ -871,7 +953,12 @@ mod tests {
             Box::pin(async move {
                 let _p = sem.acquire().await.unwrap();
                 tokio::time::sleep(delay).await;
-                Ok(ProbeResult { req, at_ms: 1, outcome, resolved: None })
+                Ok(ProbeResult {
+                    req,
+                    at_ms: 1,
+                    outcome,
+                    resolved: None,
+                })
             })
         }
     }
@@ -880,12 +967,18 @@ mod tests {
     async fn batch_honours_concurrency_and_collects_all() {
         // 并发 2、每条 20ms、6 条：串行需要 120ms，并发应明显更快。
         let p = Arc::new(FakeProber::new(2, 20, Outcome::Reply { rtt_ms: 5 }));
-        let reqs: Vec<Request> = (0..6).map(|i| req(ProbeProto::Tcp, &format!("10.0.0.{}", i + 1))).collect();
+        let reqs: Vec<Request> = (0..6)
+            .map(|i| req(ProbeProto::Tcp, &format!("10.0.0.{}", i + 1)))
+            .collect();
         let (_tx, rx) = watch::channel(false);
         let started = Instant::now();
         let out = probe_batch(p, reqs, Duration::from_millis(2000), rx).await;
         assert_eq!(out.len(), 6, "所有已完成结果必须被收集");
-        assert!(started.elapsed() < Duration::from_millis(110), "并发上限没起作用: {:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_millis(110),
+            "并发上限没起作用: {:?}",
+            started.elapsed()
+        );
     }
 
     #[tokio::test]
@@ -896,15 +989,24 @@ mod tests {
         let started = Instant::now();
         let out = probe_batch(p, reqs, Duration::from_millis(60), rx).await;
         assert!(out.is_empty(), "超出批次期限的结果不该装作成功");
-        assert!(started.elapsed() < Duration::from_millis(400), "必须被期限截断: {:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "必须被期限截断: {:?}",
+            started.elapsed()
+        );
     }
 
     #[tokio::test]
     async fn cancellation_stops_the_batch() {
         let p = Arc::new(FakeProber::new(1, 300, Outcome::Reply { rtt_ms: 1 }));
-        let reqs: Vec<Request> = (0..8).map(|i| req(ProbeProto::Tcp, &format!("10.0.0.{}", i + 1))).collect();
+        let reqs: Vec<Request> = (0..8)
+            .map(|i| req(ProbeProto::Tcp, &format!("10.0.0.{}", i + 1)))
+            .collect();
         let (tx, rx) = watch::channel(false);
-        let handle = tokio::spawn(async move { probe_batch(p, reqs, Duration::from_millis(5000), rx).await });
+        let handle =
+            tokio::spawn(
+                async move { probe_batch(p, reqs, Duration::from_millis(5000), rx).await },
+            );
         tokio::time::sleep(Duration::from_millis(60)).await;
         tx.send(true).unwrap();
         let out = handle.await.unwrap();
@@ -916,7 +1018,11 @@ mod tests {
         // 沙箱里没有 ICMP 权限，也没有可路由的 10.0.0.x：
         // 关键断言是「结果必须是明确分类」，而不是 panic 或假装成功。
         let p = SystemProber::new(4);
-        assert_eq!(Prober::free_permits(&p), Some(4), "并发额度必须如实反映 max_concurrent_probes");
+        assert_eq!(
+            Prober::free_permits(&p),
+            Some(4),
+            "并发额度必须如实反映 max_concurrent_probes"
+        );
         let r = Request {
             wan: "wan".into(),
             device: String::new(),
@@ -930,16 +1036,28 @@ mod tests {
         let out = p.probe(r.clone()).await.unwrap();
         assert!(!out.outcome.is_reply(), "沙箱里不该探测成功");
         assert!(
-            matches!(out.outcome, Outcome::Timeout | Outcome::Unreachable(_) | Outcome::Unsupported(_) | Outcome::LocalError(_)),
+            matches!(
+                out.outcome,
+                Outcome::Timeout
+                    | Outcome::Unreachable(_)
+                    | Outcome::Unsupported(_)
+                    | Outcome::LocalError(_)
+            ),
             "{:?}",
             out.outcome
         );
         // 域名解析失败路径：必须是 LocalError 或真正的网络错误，不能是 Reply。
-        let r2 = Request { target: Target::Domain("this-domain-does-not-exist-smw.invalid".into()), ..r };
+        let r2 = Request {
+            target: Target::Domain("this-domain-does-not-exist-smw.invalid".into()),
+            ..r
+        };
         let out2 = p.probe(r2).await.unwrap();
         assert!(!out2.outcome.is_reply(), "不存在的域名不能被判成可达");
         assert!(
-            matches!(out2.outcome, Outcome::LocalError(_) | Outcome::Unreachable(_) | Outcome::Timeout),
+            matches!(
+                out2.outcome,
+                Outcome::LocalError(_) | Outcome::Unreachable(_) | Outcome::Timeout
+            ),
             "{:?}",
             out2.outcome
         );

@@ -26,8 +26,14 @@ use crate::{Error, Result};
 /// 一个 UCI 条目前项：键值、键值列表或注释（注释必须保留，否则用户手写内容会丢）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
-    Option { key: String, value: String },
-    List { key: String, values: Vec<String> },
+    Option {
+        key: String,
+        value: String,
+    },
+    List {
+        key: String,
+        values: Vec<String>,
+    },
     /// 原样保存的注释行（含缩进），用于回写。
     Comment(String),
 }
@@ -192,7 +198,7 @@ fn parse_line(raw: &str) -> Result<Line> {
                     if toks.len() == 2 {
                         return Ok(Line::Option {
                             key: unquote(k)?,
-                            value: unquote(&v.to_string())?,
+                            value: unquote(v)?,
                         });
                     }
                 }
@@ -349,17 +355,14 @@ impl UciFile {
 
     /// 读取 `config <stype> '<name>'` 段。
     pub fn section(&self, stype: &str, name: &str) -> Option<&Section> {
-        self.sections.iter().find(|s| {
-            s.stype == stype && s.name.as_deref() == Some(name)
-        })
+        self.sections
+            .iter()
+            .find(|s| s.stype == stype && s.name.as_deref() == Some(name))
     }
 
     /// 返回所有该类型段（含匿名段），保持文件顺序。
     pub fn sections_of(&self, stype: &str) -> Vec<&Section> {
-        self.sections
-            .iter()
-            .filter(|s| s.stype == stype)
-            .collect()
+        self.sections.iter().filter(|s| s.stype == stype).collect()
     }
 
     pub fn get_option(&self, stype: &str, name: &str, key: &str) -> Option<&str> {
@@ -605,7 +608,10 @@ config wan 'wan2'
         sec.set_option("brand_new_key", "42"); // 未来版本新增键，写回应保留
         let text = f.render();
         let g = UciFile::parse(&text).unwrap();
-        assert_eq!(g.get_option("smartmwan", "global", "mode"), Some("failover"));
+        assert_eq!(
+            g.get_option("smartmwan", "global", "mode"),
+            Some("failover")
+        );
         assert_eq!(
             g.get_option("smartmwan", "global", "brand_new_key"),
             Some("42")
@@ -635,7 +641,11 @@ config wan 'wan2'
             .filter(|e| matches!(e, Entry::Option{key,..} if key == "x"))
             .count();
         assert_eq!(cnt, 1, "重复 option 必须合并，避免回写留残");
-        assert_eq!(s.option("x").as_deref(), Some("2"), "后值生效，与 libuci 一致");
+        assert_eq!(
+            s.option("x").as_deref(),
+            Some("2"),
+            "后值生效，与 libuci 一致"
+        );
     }
 
     #[test]
@@ -665,8 +675,7 @@ config wan 'wan2'
 
     #[test]
     fn reports_unclosed_quote_as_warning() {
-        let (_, warns) =
-            UciFile::parse_report("config a 'b'\n\toption k 'unclosed\n").unwrap();
+        let (_, warns) = UciFile::parse_report("config a 'b'\n\toption k 'unclosed\n").unwrap();
         assert!(!warns.is_empty(), "语法问题必须报告而不是静默忽略");
         assert!(warns[0].contains("第 2 行"), "错误必须带行号: {:?}", warns);
     }
@@ -697,7 +706,10 @@ config wan 'wan2'
 
     #[test]
     fn anonymous_sections_are_supported() {
-        let f = UciFile::parse("config route\n\toption target '0.0.0.0/0'\nconfig route\n\toption target ' ::/0 '\n").unwrap();
+        let f = UciFile::parse(
+            "config route\n\toption target '0.0.0.0/0'\nconfig route\n\toption target ' ::/0 '\n",
+        )
+        .unwrap();
         assert_eq!(f.sections_of("route").len(), 2);
         assert!(f.sections_of("route")[0].name.is_none());
         // libuci 保留引号内的空白：引号就是用户表达“这就是值”的方式。
@@ -718,6 +730,9 @@ config wan 'wan2'
         let out = f.render();
         let again = UciFile::parse(&out).unwrap();
         assert_eq!(again.sections_of("route").len(), 2);
-        assert_eq!(again.sections_of("route")[1].option("target"), Some(" ::/0 ".to_string()));
+        assert_eq!(
+            again.sections_of("route")[1].option("target"),
+            Some(" ::/0 ".to_string())
+        );
     }
 }

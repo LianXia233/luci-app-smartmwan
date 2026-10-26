@@ -123,7 +123,10 @@ fn open_sink(path: &Path) -> std::io::Result<FileSink> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).ok();
     }
-    let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
     Ok(FileSink {
         path: path.to_path_buf(),
@@ -260,10 +263,7 @@ pub fn log(l: Level, module: &str, action: &str, message: &str, ctx: &[(&str, St
     for (k, v) in ctx {
         safe.insert((*k).to_string(), redact(k, v));
     }
-    let wan = safe
-        .get("wan")
-        .or_else(|| safe.get("interface"))
-        .cloned();
+    let wan = safe.get("wan").or_else(|| safe.get("interface")).cloned();
 
     let line = {
         let mut kv = safe.iter().collect::<Vec<_>>();
@@ -432,7 +432,10 @@ mod tests {
 
     /// 取本测试写下的事件（按模块名筛选，新→旧）。
     fn mine(module: &str) -> Vec<Event> {
-        recent(None, 500).into_iter().filter(|e| e.module == module).collect()
+        recent(None, 500)
+            .into_iter()
+            .filter(|e| e.module == module)
+            .collect()
     }
 
     #[test]
@@ -525,7 +528,10 @@ mod tests {
         assert_eq!(only_err[0].level, "ERROR");
         assert_eq!(mine("lg-recent").len(), 2);
         assert_eq!(
-            recent(None, 1).into_iter().filter(|e| e.module == "lg-recent").count(),
+            recent(None, 1)
+                .into_iter()
+                .filter(|e| e.module == "lg-recent")
+                .count(),
             1,
             "limit 必须生效"
         );

@@ -17,8 +17,8 @@
 pub mod config;
 pub mod health;
 pub mod logging;
-pub mod rules;
 pub mod rpc;
+pub mod rules;
 pub mod scheduler;
 pub mod system;
 pub mod transaction;
@@ -154,7 +154,8 @@ pub mod marks {
 
     /// 所有权区间（含端点）：所有本插件产生的标记都落在这里。
     pub const OWN_MIN: u32 = MAGIC << MAGIC_SHIFT;
-    pub const OWN_MAX: u32 = (MAGIC << MAGIC_SHIFT) | BUCKET_MASK | GEN_MASK | CLASS_MASK | SLOT_MASK;
+    pub const OWN_MAX: u32 =
+        (MAGIC << MAGIC_SHIFT) | BUCKET_MASK | GEN_MASK | CLASS_MASK | SLOT_MASK;
 
     /// nft 规则里使用的区间文本。
     pub const fn own_range_text() -> &'static str {
@@ -163,7 +164,7 @@ pub mod marks {
 
     /// 组装一个标记；槽位/类别越界直接 panic —— 这是编程错误，不是运行时输入。
     pub fn mark(slot: u8, class: u32, gen: u8, bucket: u16) -> u32 {
-        assert!(slot >= 1 && slot <= MAX_WANS, "WAN 槽位越界: {slot}");
+        assert!((1..=MAX_WANS).contains(&slot), "WAN 槽位越界: {slot}");
         assert!(class <= 15, "类别越界: {class}");
         let m = ((MAGIC & 0x0F) << MAGIC_SHIFT)
             | ((slot as u32) & 0xFF)
@@ -177,7 +178,7 @@ pub mod marks {
 
     /// 判断一个（可能来自他人的）标记是否属于本插件。
     pub fn is_own(m: u32) -> bool {
-        m >= OWN_MIN && m <= OWN_MAX
+        (OWN_MIN..=OWN_MAX).contains(&m)
     }
 
     pub fn slot_of(m: u32) -> u8 {
@@ -273,7 +274,7 @@ mod core_tests {
                     for bucket in 0..marks::BUCKETS {
                         let m = marks::mark(slot, class, gen, bucket);
                         assert!(marks::is_own(m), "0x{m:08x} 应属于本插件");
-                        assert!(m >= marks::OWN_MIN && m <= marks::OWN_MAX);
+                        assert!((marks::OWN_MIN..=marks::OWN_MAX).contains(&m));
                     }
                 }
             }
@@ -284,7 +285,17 @@ mod core_tests {
             format!("0x{:08x}-0x{:08x}", marks::OWN_MIN, marks::OWN_MAX)
         );
         // 他人的典型 connmark（fw4 策略路由常用小数值）绝不能被判为我们的。
-        for foreign in [0u32, 1, 2, 0x3e, 0x64, 0x100, 0x8000_0000, 0xf000_0001, 0x0600_0001] {
+        for foreign in [
+            0u32,
+            1,
+            2,
+            0x3e,
+            0x64,
+            0x100,
+            0x8000_0000,
+            0xf000_0001,
+            0x0600_0001,
+        ] {
             assert!(!marks::is_own(foreign), "0x{foreign:08x} 不属于本插件");
         }
     }
