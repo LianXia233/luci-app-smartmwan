@@ -630,7 +630,6 @@ pub fn build(input: &Input) -> Result<Program> {
             let slug = safe_name("游戏规则", &g.slug, 40)?;
             let tag = format!("smw:game:{slug}");
             let mut matchers: Vec<String> = Vec::new();
-            let mut set_names: Vec<String> = Vec::new();
 
             if !g.macs.is_empty() {
                 if !caps.ether_sets {
@@ -647,8 +646,13 @@ pub fn build(input: &Input) -> Result<Program> {
                     el.dedup();
                     decl.push_str(&set_block(&name, "ether_addr", &[], &el));
                     p.sets.push(name.clone());
-                    set_names.push(name.clone());
-                    matchers.push(format!("@{name}", name = name));
+                    // 选择器必须带字段名（`ether saddr @set`），不能只写裸 `@set`：
+                    // 裸集合引用不带字段，和后面的 `ip saddr`/`ip6 saddr` 混排时语义不明，
+                    // 且历史上这里的拼接会把以 `@` 开头的匹配项整条丢掉 ——
+                    // MAC 条件于是静默失效，一条「只针对这台主机」的规则
+                    // 退化成命中范围内全部新建连接。这类静默放宽比直接报错危险得多。
+                    // 现在匹配项一律带字段名，拼接处也不再做任何过滤。
+                    matchers.push(format!("ether saddr @{name}"));
                 }
             }
             let mut v4_cli = family_elems(&g.client_v4, Family::V4)
@@ -809,12 +813,13 @@ pub fn build(input: &Input) -> Result<Program> {
                         Some(format!("ip6 daddr @smw_g_{slug}_dst6")),
                         Some(Family::V6),
                     ));
-                } else if v4_dst.is_empty() && g.dns_set.as_ref().map(|_| false).unwrap_or(true) {
+                } else if v4_dst.is_empty() && g.dns_set.is_none() {
                     // 无目标条件时 IPv6 也照同一意图匹配客户端集合。
+                    // 反过来说：只要 dns_set 存在就不给 v6 兜底 —— 域名集合目前是
+                    // IPv4-only（解析的是 A 记录），兜底会变成「有域名规则却放行全部 v6」。
                     fam_rules.push((None, Some(Family::V6)));
                 }
             }
-            let _ = &set_names;
             for (dst, fam) in fam_rules {
                 let Some(fam) = fam else { continue };
                 if !input.families.contains(&fam) {
@@ -824,7 +829,7 @@ pub fn build(input: &Input) -> Result<Program> {
                 if let Some(d) = dst {
                     parts.push(d);
                 }
-                parts.extend(matchers.iter().filter(|m| !m.starts_with('@')).cloned());
+                parts.extend(matchers.iter().cloned());
                 parts.extend(l4.iter().cloned());
                 parts.push("counter".into());
                 parts.push(format!("meta mark set {mark_txt}"));
@@ -1731,6 +1736,18 @@ mod tests {
             .to_string();
         assert!(rule.contains("meta l4proto udp"));
         assert!(rule.contains("th dport { 30000-30100 }"));
+        // 回归：MAC 与客户端 IP 条件必须真的出现在规则文本里。
+        // 曾经的缺陷是匹配项拼接时按 `@` 前缀过滤，把裸集合引用（MAC）整条丢掉，
+        // 集合仍然被声明（所以旧断言能过），但规则不再限制主机 —— 静默放宽匹配范围。
+        assert!(
+            rule.contains("ether saddr @smw_g_pubg_eu_mac"),
+            "MAC 条件必须出现在规则里：{rule}"
+        );
+        assert!(
+            rule.contains("ip saddr @smw_g_pubg_eu_cli4"),
+            "客户端 IP 条件必须出现在规则里：{rule}"
+        );
+        assert!(rule.contains("ip daddr @smw_g_pubg_eu_dst4"));
         assert!(rule.contains("counter"));
         assert!(rule.contains(&marks::hex(mmark).to_string()));
         assert!(rule.contains("ct mark set meta mark"));
