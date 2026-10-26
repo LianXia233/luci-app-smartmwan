@@ -23,8 +23,8 @@ src/                    Rust 后端（1 个库 + 1 个守护进程二进制）
   system/               netlink、策略路由、接口拓扑、nftables 生成、conntrack、exec
   health/               探测（ICMP/TCP/UDP/DNS）、滑动窗口指标、线路状态机
   scheduler/            负载均衡桶分配、主备切换、滞回去抖、低延迟择优
-  rules/                流量分类（游戏白名单 / 客户端匹配 / 域名动态集合）  ← 代码完成，运行期未接线
-  transaction.rs        校验→下发→回读→回滚 的单事务层                    ← 未实现
+  rules/                流量分类（游戏白名单 / 客户端匹配 / 域名动态集合）  ← 完成，由事务层调用
+  transaction.rs        校验→下发→回读→回滚 的单事务层                    ← 代码完成 / 待真机
   rpc/                  Unix socket JSON RPC + ACL + 审计日志             ← 未实现
   main.rs               守护进程入口与 tokio 监督循环                      ← 未实现
 root/                   打包进 ipk/apk 的运行时文件（UCI 默认值、procd、nftables.d、rpcd ucode/acl、menu.d）
@@ -36,10 +36,14 @@ tests/                  跨层集成测试
 
 ## 当前状态（2026-10-26）
 
-后端五层（config / system / health / scheduler / rules）已实现并通过单元测试，
-`cargo test --offline --lib` = **329 passed / 0 failed**。
-事务层、RPC 层、守护进程入口、前端与打包尚未完成；规则层要特别说明：
-它的产物目前只被单测喂进数据面生成器，**运行期还没有调用者**，所以「代码完成」不等于「设备上生效」。
+后端六层（config / system / health / scheduler / rules / transaction）已实现并通过单元测试，
+`cargo test --offline --lib` = **350 passed / 0 failed**。
+RPC 层、守护进程入口、前端与打包尚未完成。事务层是这一轮的落点：
+一次提交固定走 `校验 → 计划 → nft 试算 → 路由下发/复核 → nft 提交/复核 → 写 last-good 快照`，
+任一步失败按逆序回滚，复核不过就不写快照。规则层从这轮起**有了真正的调用者**
+（`Coordinator::build_plan()` → `rules::compile()` → `firewall::build()`）。
+两条必须说清的限定：**事务层目前只被单测调用**；nft 通道在单测里是替身（`FirewallExec::Sim`），
+**不验证 nft 语法**，真机必须换 `FirewallExec::Real`。
 逐条完成度见 [docs/PROGRESS.md](docs/PROGRESS.md)，交付判据见 [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)。
 
 **现在这个仓库不能装到路由器上用**——守护进程入口还没实现，
@@ -49,7 +53,7 @@ tests/                  跨层集成测试
 ## 开发环境命令
 
 ```sh
-cargo test --offline --lib                           # 单元测试（沙箱内可跑，329 条）
+cargo test --offline --lib                           # 单元测试（沙箱内可跑，350 条）
 cargo clippy --offline --all-targets -- -D warnings  # Lint：必须 0 警告
 cargo fmt --all -- --check                           # 风格：必须无差异
 cargo build --offline --release                      # 构建 smartmwand
@@ -69,6 +73,10 @@ cargo build --offline --release                      # 构建 smartmwand
 * **不拼接 shell**。所有外部命令走 `system::exec` 的白名单 + 参数数组 + 超时 + 输出封顶。
 * **不谎报**。`Unsupported`/`LocalError` 不计入线路失败；没有采样就说没有采样；
   没有可用线路就不分流；加权 ECMP 直接返回不支持而不是伪实现。
+* **一次提交要么完整要么撤销**。事务层固定 `试算 → 路由 → 复核 → nft → 复核 → 快照` 的顺序，
+  路由先于 nft（否则会出现「包已标记但无策略路由」的黑洞），复核不过绝不写快照，
+  回滚按逆序执行且每一条失败都写进回执（`rollback` 非空 = 内核状态需人工确认）。
+  唯一的故意例外：快照写失败时**不**回滚已经验证通的数据面，只报 `ok=false` 并说明原因。
 * **默认不改变现状**。`global.enabled = 0`，首次安装不动任何用户网络配置。
 * **规则层不放宽、不编造**。条件写错就报错而不是跳过（跳过等于「拦 10 段」变「拦 9 段」）；
   元素数量超上限报错而不是截断；设备不支持动态集合时**不下发该条件**，客户端条件全部失效时

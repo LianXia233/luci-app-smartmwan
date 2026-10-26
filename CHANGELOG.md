@@ -49,6 +49,30 @@
   端到端单测 `compiled_specs_are_accepted_by_firewall_build` 把「配置→GameSpec→nft 文本」串起来，
   契约漂移在提交前就会被抓到。本层 **51 条单测**（`dns_sets` 15 / `matchers` 12 / `presets` 10 /
   `mod` 14），lib 单测从 276 增至 328；数据面同类缺陷再修一处后为 **329**。
+* **事务层 `src/transaction.rs`**（任务书执行顺序第 4 步的 4b「事务编排」，M6）：把此前各自单测的
+  模块接成一条真正的提交链路 —— `校验 → 计划（观测内核 + rules::compile + firewall::build）→
+  nft 试算 → 路由下发 → 路由复核 → nft 提交 → nft 复核 → 写 last-good 快照`，八阶段顺序固定。
+  顺序背后是两条硬道理：nft 试算必须在任何内核写入之前（语法不过就不该碰内核）；
+  路由必须**先于** nft 提交（反过来会出现「包已打上 `0x05…` 标记、策略路由还没装」的黑洞窗口，
+  表现为突然全量走 main 表且没有任何报错）。失败时 `unwind()` 按逆序回滚（先 nft 后路由），
+  每一条撤销失败都写进 `Receipt.rollback` 并记错误日志 —— **该字段非空就意味着内核状态需人工确认**。
+  三个刻意的不对称：
+  ① 复核不通过**绝不**写快照（快照只能描述设备上确实生效的状态）；
+  ② 快照写入失败**不**回滚已验证的数据面，但 `ok=false` 且错误文案写「数据面已生效但快照写入失败」
+  （为了一个文件没写成就拆掉通的上网路径，是把小故障升级成大故障）；
+  ③ 找不到 `nft` 可执行文件时**拒绝** enabled 提交（半套状态比不更危险，也绝不只装半套路由），
+  但**允许**停用提交（清场不需要 nft，两个 nft 阶段记为「跳过」并写明依据）。
+  `Coordinator::submit()` 刻意**不返回 `Result`**：任何结局都是一份 `Receipt`
+  （阶段记录 / issues / pending / rollback / 变更摘要 / nft 通道种类），
+  因为「失败但已回滚」与「失败且未提交」对运维是两个完全不同的动作，RPC 层不得把它压成 bool。
+  `reclaim()` 负责回收上次崩溃的残留：按 `NS` 前缀、`RULE_MASK`、`OUR_RTPROT`、表号区间判定所有权，
+  **只删自己的对象**，别人的规则与路由保留并原文列进 `foreign`。
+  幂等以证据判定（`Diff` 为空 **且** `applied.nft` 逐字节相同 ⇒ `changed=false`），但仍执行试算与两侧复核。
+  规则层在这一步**第一次有调用者**：`game_rule_from_config_reaches_the_nft_program` 从 UCI `config game`
+  段一路断言到集合名、`ip daddr @set` 与 `smw:game:<slug>` 标签。
+  新增 **21 条单测**，lib 单测 329 → **350**。
+  **限定**：nft 通道在单测里是 `FirewallExec::Sim` 替身，它**不验证 nft 语法**，只验证编排顺序；
+  真机必须换 `FirewallExec::Real`（`nft -c -f` / `nft -f` / `nft -a list`）后重跑同一批结论（M10）。
 * **工程闸门**：`cargo clippy --offline --all-targets -- -D warnings` 归零
   （20 条 lib 告警逐条修，只保留 1 处带中文说明的 `#[allow]`，在测试夹具里）；
   `cargo fmt --all` 建立基线，此后 `clippy` / `fmt --check` 与单测同为提交前置条件。
@@ -113,17 +137,28 @@
   `prerouting` 的 `output` 链：链名与 hook 类型不一致是语义错误（重复注册同一 hook），
   而 `type route hook output` 属于未经设备实测的语法，写进静态占位会让 fw4 在不支持的
   内核上直接启动失败。`output` 链改为运行期按能力探测结果添加，并加了对应断言。
+* **带 `comment` 的保护/绕行规则没登记进 `Program::tags`**（`9abc322`，M6 暴露）。
+  `firewall::build()` 为保护源地址与绕行目的地址生成了 4 条带标签的规则，却只把游戏与桶规则
+  登记进 `tags`。M5 之前没人拿 `tags` 与内核实际规则做集合比对，所以漏登记一直没被发现；
+  事务层的复核阶段一比就露馅，报「多余标签」——**把一次本来正确的提交判成失败并回滚**。
+  现在生成文本与登记 tag 在同一处完成。教训：`tags` 不是元数据，是复核的判据，二者必须同源。
+* **`config::diff()` 漏了 `global.hash_seed`**（`9abc322`）。改种子会重排全部新建连接的落线，
+  属于用户必须「在应用前看得见」的变更，但变更清单里不出现，`smartmwan.diff` 的摘要就少报一项。
+  同类问题只能靠「diff 覆盖 schema 全部字段」的核对来防，新增字段时除 `schema.rs` /
+  `decode` / `encode` / `validate` 外还要过 `diff()` 这一关。
 
 ### 已知缺失（尚未实现，别当作已完成）
 
-* `src/transaction`（校验→下发→回读→回滚 + last-good）——占位。
 * `src/rpc`（Unix socket JSON RPC + ACL + 审计）——占位。
-* `src/main`（守护进程入口与 tokio 监督循环）——占位。
+* `src/main`（守护进程入口与 tokio 监督循环）——占位。**因此事务层虽然完成，却还没有运行期调用者**：
+  没有任何进程会去读 UCI、按周期决策并调用 `Coordinator::submit()`。
+* 事务层的 nft 通道只在 `FirewallExec::Sim` 替名下验证过编排顺序；
+  **nft 语法与真实下发未验证**（沙箱无 `nft`、无 netfilter 内核支持），归 M10。
+* 桶轮排的热替换（`Nft::replace_rule`）已实现并有单测，但**尚未被周期循环接上**（M7）。
 * 预置项**数据文件**未提供（`root/usr/share/smartmwan/presets/*.json`）：加载器与校验已就位，
   但因「不得编造服务器 IP/端口」，在拿到可引用来源之前不入库任何具体地址。
-* 规则层的**运行期装配**未接：`rules::compile()` → `firewall::build()` → 下发、以及域名集合的
-  周期刷新，目前只有单测把链条串起来（`rules::tests::compiled_specs_are_accepted_by_firewall_build`）；
-  事务层（M6）与守护进程（M7）都还不存在，所以规则层「代码完成」**不等于**「设备上生效」。
+* 域名集合的**周期刷新环**未接：`rules::dns_sets` 的对账与解析逻辑完成，
+  但没人按 `dns_ttl_floor_s` 定时驱动它（M7 的监督循环）。
 * LuCI 前端 7 个页面、CSS、rpcd ucode 桥、ACL JSON、menu.d JSON——未创建。
 * OpenWrt 包 Makefile、procd 脚本、UCI 默认配置、`/etc/nftables.d` 片段、
   apk 维护脚本——未创建。
@@ -132,8 +167,10 @@
   下发路径、fw4 语法、LuCI 页面与 apk 安装全部未经真实设备验证。
   本轮新增两项只能在设备上确认：`flags dynamic,timeout` 集合的实际老化行为，
   以及 `ether saddr @set` 在 bridge 口与 VLAN 子接口上的匹配范围。
+  M6 之后还多一项：**事务层的八阶段编排在真实 `nft` 通道上是否仍然成立**
+  （单测走的是 `FirewallExec::Sim` 替身，只证明顺序与回滚逻辑，不证明语法）。
 * 沙箱可交付的静态结论已齐：`clippy -D warnings` 0 告警、`fmt --check` 无差异、
-  `build` 0 告警、329 单测通过、禁 Lua 检查通过 —— 这五项每次提交前重跑。
+  `build` 0 告警、350 单测通过、禁 Lua 检查通过 —— 这五项每次提交前重跑。
 
 ## [0.3.0] — 2026-10-26（内部里程碑）
 

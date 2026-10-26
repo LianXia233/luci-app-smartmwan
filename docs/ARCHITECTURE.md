@@ -24,7 +24,7 @@
               读状态 ▲      │ 决策 Outcome          │ 规则
         ┌────────────┴──┐   ▼                       ▼
         │ health        │ ┌──────────────────────────────────────┐
-        │ 探测+指标+状态机│ │ transaction 校验→下发→回读→回滚       │  M6 未实现
+        │ 探测+指标+状态机│ │ transaction 校验→下发→回读→回滚       │  代码完成 / 待真机
         └────────────▲──┘ └───────┬──────────────────┬───────────┘
                      │            │                  │
         ┌────────────┴────────────▼──┐   ┌───────────▼────────────┐
@@ -36,7 +36,7 @@
                                          └────────────────────────┘
 ```
 
-`rules`（M5，**代码已完成、运行期未接线**）位于 `config` 与 `transaction` 之间，四个子模块：
+`rules`（M5，代码完成；**调用者是 `transaction::Coordinator::build_plan()`**）位于 `config` 与 `transaction` 之间，四个子模块：
 `matchers`（纯函数归一：CIDR/端口/MAC/域名/slug）、`presets`（数据文件加载器，**代码零内置地址**）、
 `dns_sets`（域名→动态集合的注册表 + 解析，纯内存，不碰 nft）、
 `mod::compile`（合并预置项与规则、模式与启停感知、产出 `Vec<firewall::GameSpec>`）。
@@ -63,14 +63,36 @@
 4. conntrack::snapshot() +
    interface::sample_traffic()  动态算法的输入
 5. scheduler::decide()          → Outcome{buckets, changed, active, standby, notes, …}
-6. Outcome.changed == false     → **到此为止，不写任何内核对象**
-7. rules::compile()             → GameSpec（含 pending/issue；预置项与规则在此合并）
-8. transaction::commit()        → firewall::build() → nft -c → nft -f → 回读 → last-good
-9. route::reconcile()           → ip rule / 路由表差量（只在槽位集合变化时）
+6. Outcome.changed == false     → **不调用 submit()**：决策没变就不产生任何数据面写入
+7. transaction::submit(cfg, Decision{bucket_map, picks, gen, now_ms})
+   ├─ Validate   config::validate::validate()，有 error 直接拒绝，不进 plan
+   ├─ Plan       观测内核 → rules::compile() → firewall::build()（含 protect/bypass/游戏/桶）
+   ├─ FirewallCheck  nft 试算（`nft -c`），在任何内核改动之前
+   ├─ RouteApply     route::Applier::apply()（失败即止，绝不进 nft 提交）
+   ├─ RouteVerify    回读 ip rule / 路由表（空 diff 也复核，用证据而非「执行成功」说话）
+   ├─ FirewallApply  nft 提交（先压回滚记录再提交）
+   ├─ FirewallVerify nft list 回来按链比对 tags
+   └─ Persist        最后一步才写 applied.json + applied.nft（last-good）
+   任一阶段失败 ⇒ unwind() 逆序回滚（先 nft 后路由），回执 Receipt.rollback 非空
 
 （旁路，不在这条周期链上）rules::dns_sets::refresh_stale() → resolve() → observe()
    → 只对域名规则做，按 `dns_ttl_floor_s` 的下界节流；解析失败**不回灌** health 层的线路状态。
+（旁路）桶轮排的热替换：`Nft::replace_rule(handle, body)` 只改那几条桶映射规则，
+   不重建整表 —— 见 §4「bucket 在标记里但不在 `ip rule` 掩码里」。
 ```
+
+`transaction` 层的三条约定（M7 的调用方必须遵守，改动前先想清楚代价）：
+
+1. **阶段顺序不可调换**：nft 试算在任何写入之前；路由先于 nft 提交（反过来会出现
+   「包已打标记、策略路由还没装」的黑洞窗口）；快照永远是最后一步。
+2. **复核不过不写快照**：`applied.json` / `applied.nft` 只能描述「设备上确实生效」的状态，
+   否则下次启动会拿一份假的 last-good 去恢复。
+3. **记账失败不回滚已验证的数据面**：persist 失败时保留数据面、置 `ok=false` 并说明原因。
+   为了「文件没写成」把已经验证通的上网路径拆掉，是把小故障升级成大故障。
+
+`Coordinator::submit()` 刻意**不返回 `Result`**：任何结局都是一份 `Receipt`
+（含阶段记录、issues、pending、rollback、摘要、nft 通道种类）。
+RPC 层不得只回一个 bool —— 那等于把「内核现在是什么状态」这个信息丢掉。
 
 ## 4. 数据平面合同
 
@@ -144,7 +166,7 @@ permission/unsupported/timeout/no_route/io/json`），前端据此区分「可�
 | 14 | `smartmwan.validate` | 读 | 对提交的配置跑校验，不写文件、不碰内核 |
 | 15 | `smartmwan.save` | 写 | 写 `/etc/config/smartmwan`，返回 diff，**不下发** |
 | 16 | `smartmwan.diff` | 读 | 待下发变更摘要（应用前确认用） |
-| 17 | `smartmwan.apply` | 写 | 一次事务：校验→dry-run→下发→回读→记 last-good；失败自动回滚 |
+| 17 | `smartmwan.apply` | 写 | 一次事务：`Coordinator::submit()` → 八阶段回执 `Receipt`（阶段记录、issues、pending、rollback、摘要、nft 通道种类）；失败自动逆序回滚。**响应必须回传回执，不得压缩成 bool** |
 | 18 | `smartmwan.rollback` | 写 | 恢复 last-good 并重新下发 |
 | 19 | `smartmwan.forceWan` | 写 | 强制指定出口（带二次确认标志） |
 | 20 | `smartmwan.releaseForced` | 写 | 取消强制，回到自动决策 |
@@ -152,8 +174,8 @@ permission/unsupported/timeout/no_route/io/json`），前端据此区分「可�
 | 22 | `smartmwan.probeNow` | 读（有网络副作用） | 立即跑一轮探测，不改配置、不下发；返回 `RoundInfo` |
 | 23 | `smartmwan.reload` | 写 | 重新读取 UCI 并触发 `on_config_change` |
 
-并发：一个全局事务互斥锁（`apply`/`rollback`/`reload`/`forceWan` 串行）；
-读方法不取写锁，但读 `Scheduler` 状态用短临界区快照，避免「读到半更新的状态」。
+并发：`transaction::Coordinator` 内部一把 `AsyncMutex` 串行化全部 `plan`/`submit`/`reclaim`（M6 已实现，
+`is_busy()` 供 RPC 即时回答）；读方法不取写锁，但读 `Scheduler` 状态用短临界区快照，避免「读到半更新的状态」。
 审计：所有写方法记录调用者 uid、方法名、参数摘要（脱敏）、transaction id、结果与耗时。
 
 ## 7. 为什么自己写 netlink 和 UCI 解析
@@ -176,7 +198,13 @@ permission/unsupported/timeout/no_route/io/json`），前端据此区分「可�
 | 全部线路 FAILED | 桶全 0、`all_dead=true`，UI 显示「无可用出口」，不回退成「走默认路由」这种隐式行为 |
 | 算法在设备上不支持 | `Error::Unsupported` → 降级为 `WeightedHash` 并写 note「算法降级：…」 |
 | nft 语法探测失败 | 该语法不写进程序 → `Issue::Warning` 说明降级后果 |
-| 事务任一步失败 | 按 `Undo` 逆序回滚 + 记 transaction id，返回 `Error::Rollback` |
+| 事务任一步失败 | `unwind()` 按 `Undo` **逆序**回滚（先 nft 后路由），每条回滚失败都写进 `Receipt.rollback` 并记 `logging::error_ctx`；`rollback` 非空 ⇒ UI 必须提示「内核状态需人工确认」，不能显示成已恢复 |
+| nft 试算（`nft -c`）不通过 | 直接拒绝，**一次内核写入都不发生**，`applied.json` / `applied.nft` 也不写（`check_failure_leaves_kernel_and_state_files_untouched`） |
+| 路由下发失败 | 停在 RouteApply，绝不进 nft 提交；`Applier` 已自行回滚已成功部分，事务层不再重复撤 |
+| 复核（路由或 nft）不通过 | 逆序回滚 + **不写快照**：快照只描述设备上确实生效的状态 |
+| 快照写入失败 | **不回滚已验证的数据面**（拆掉一条已经通的上网路径是把小故障升级成大故障），但 `ok=false`、`error` 写明「数据面已生效但快照写入失败」，`rollback` 里记「快照未写入」 |
+| 设备上找不到 `nft` | enabled 配置**拒绝提交**（半套状态比不更危险，且绝不只装半套路由）；停用配置**允许**走完（清场不需要 nft），两个 nft 阶段记为「跳过」并写明依据 |
+| 决策未变（`Outcome.changed == false`） | 不调用 `submit()`；即使被调用，`Diff` 为空且 `applied.nft` 逐字节相同也判「无变更」，但仍执行试算与两侧复核（`changed=false` 出现在回执里） |
 | 命令超时 | `Error::Timeout{operation, elapsed_ms}`，子进程被 kill 且回收 |
 | 标记属于别人 | 完全不介入该连接（不抢别人的出口决策） |
 | 设备 nft 不支持 `dynamic,timeout` 集合 | **该规则的域名条件不下发**（不退化成无目的兜底规则）+ `Issue::Warning` 指向 `smartmwan.game[<slug>].domains` |

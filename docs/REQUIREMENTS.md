@@ -42,7 +42,7 @@
 | 2.7 | 只清理自己的对象，绝不 flush 整表 | `NS="smw"` 前缀、`delete table inet smw` 单表重建 | 完成（代码层面）；需真机 |
 | 2.8 | 真实核对 `/etc/nftables.d/` 机制 | `firewall.rs::include_file_text`，配合 UCI `config include` / `type 'nftables'` / `position` | 完成（依据 firewall4 ucode 源码）；需真机 |
 | 2.9 | 不做高频全量重建 | 低频：整表单批原子重建；高频桶重排：仅 `replace rule ... handle N`（`Nft::replace_rule`） | 完成（设计上）；需真机确认 handle 稳定性 |
-| 2.10 | 校验后下发 + 下发后回读 + 失败回滚 | `route::Applier::{apply,verify,rollback}`、`Undo` | 完成（含单测）；`transaction` 编排层未开始 |
+| 2.10 | 校验后下发 + 下发后回读 + 失败回滚 | `route::Applier::{apply,verify,rollback}`、`Undo`；编排层 `src/transaction.rs::Coordinator`（八阶段固定顺序 + 逆序 `unwind`） | 完成（含单测）；nft 侧在单测里走 `FirewallExec::Sim`，真实 `nft -c/-f/list` 行为需真机 |
 
 ## 3. 工作模式与算法
 
@@ -87,9 +87,9 @@
 | 6.1 | ≥19 个方法，见 `docs/ARCHITECTURE.md` 的方法清单 | 未开始（`src/rpc/mod.rs` 占位） |
 | 6.2 | 统一信封 `ok/data/error{code,message}/timestamp` | 部分：`Error::code()` 已定义 12 个稳定错误码；信封未实现 |
 | 6.3 | 严格 ACL、互斥锁、审计日志、读操作无副作用 | 未开始 |
-| 6.4 | UCI `save`/`apply` 分离 | 部分：`config::Store::{save, render, diff}` 完成；RPC 层的分离语义未开始 |
-| 6.5 | 下发前变更摘要 | 完成：`config::diff()` + `route::Diff::summary()` |
-| 6.6 | 迁移、默认值、last-good 保存与恢复 | 完成：`config::migrate()`、`Applied::{store_applied, load_applied, restore_last_good}` |
+| 6.4 | UCI `save`/`apply` 分离 | 部分：`config::Store::{save, render, diff}` 完成；事务层已提供分离所需的两个入口 —— `Coordinator::saved_config()`（apply 时以磁盘上的 `/etc/config/smartmwan` 为准，不信任 UI 传来的副本）与 `Coordinator::submit()`；RPC 层的「已保存未应用」标记未开始 |
+| 6.5 | 下发前变更摘要 | 完成：`config::diff()` + `route::Diff::summary()` + `transaction::Plan::summary`（字段变更 → 本次决策（代际/桶/时间）→ 策略路由增删与冲突 → nft 程序概述），`Plan::text()` 就是将要下发的原文，UI 可先展示再提交 |
+| 6.6 | 迁移、默认值、last-good 保存与恢复 | 完成：`config::migrate()`、`Applied::{store_applied, load_applied, restore_last_good}`；事务层在**两侧复核都通过之后**才写快照 —— `state_dir/applied.json`（配置指纹 + 事务 id）与 `state_dir/applied.nft`（实际下发的原文），旧快照另存为 `applied.json.last-good`；快照写失败时 `ok=false` 且不谎报成功 |
 
 ## 7. 安全清单（11 项，逐项见 `docs/SECURITY.md`）
 
@@ -113,7 +113,7 @@
 
 | # | 要求 | 状态 |
 |---|---|---|
-| 9.1 | 功能测试 + 工程测试 | 部分：329 个 lib 单测全绿（`config 51 / system 109 / health 49 / scheduler 58 / rules 51 / logging 5 / lib 6`）；工程闸门已在沙箱实测通过 —— `cargo clippy --offline --all-targets -- -D warnings`（0）、`cargo fmt --all -- --check`（无差异）、`cargo build --offline`（0 警告）、`./scripts/no-lua-check.sh`（退出 0）；`tests/`（集成）未开始 |
+| 9.1 | 功能测试 + 工程测试 | 部分：**350** 个 lib 单测全绿（`config 51 / system 109 / health 49 / scheduler 58 / rules 51 / logging 5 / lib 6 / transaction 21`）；工程闸门已在沙箱实测通过 —— `cargo clippy --offline --all-targets -- -D warnings`（0）、`cargo fmt --all -- --check`（无差异）、`cargo build --offline`（0 警告）、`./scripts/no-lua-check.sh`（退出 0）；`tests/`（集成）未开始；事务层的 21 条走的是 `FirewallExec::Sim` 替身通道，**不等于 nft 语法已验证** |
 | 9.2 | 禁 Lua 自动化检查 | 完成 |
 | 9.3 | 10 条交付判据 | 进行中，逐条见 `docs/TESTING.md` §交付判据 |
 | 9.4 | 绝不把模拟数据当实时状态展示 | 设计上保证：未测量首轮会产出显式 note「尚未完成首轮探测…」，`Outcome` 无数据时 `carries_traffic()==false` |
@@ -151,10 +151,10 @@
 1 审计仓库/固件/LuCI-ucode        完成（research/luci.md, research/buildsystem.md）
 2 设计配置/RPC/数据面             完成（docs/ARCHITECTURE.md）
 3 Rust 服务 + 健康状态机          完成
-4 策略路由 / nftables / 事务      模块 4a 完成（system/*），4b 事务编排未开始
+4 策略路由 / nftables / 事务      完成（模块 4a system/* + 4b transaction.rs；4b 待真机）
 5 算法 + 主备切换                 完成
-6 游戏路由                        代码完成（rules/*，51 单测）；预置数据文件未提供、
-                                  运行期装配在 4b/M7 ← 上一落点已收口
+6 游戏路由                        代码完成（rules/*，51 单测）；已由事务层接线；
+                                  预置数据文件仍需权威来源
 7 LuCI 页面                       未开始
 8 CSS                             未开始
 9 打包                            未开始
@@ -162,8 +162,9 @@
 11 修复 + 最终报告                持续
 ```
 
-当前正确落点是第 4 步的 **4b 事务编排**（M6）：规则层已能产出 `GameSpec`，
-但还没有运行期调用者，必须先在事务层把「配置→规则→nft 文本→下发→回读→回滚」串起来。
+当前正确落点是第 7 步之前的 **M7：RPC + 守护进程入口**（`src/rpc/mod.rs`、`src/main.rs`）。
+事务层已经把「配置→规则→nft 文本→下发→回读→回滚→快照」串成一次提交，缺的是运行期：
+谁读 UCI、谁按周期决策、谁把 `Receipt` 交给 UI、谁在收到 SIGTERM 时清场。
 
 安全与数据面正确性优先于界面打磨 —— 因此 §2、§5、§7 的「需真机」条目在没有设备时一律标注为未验证，
 不用界面完成度掩盖它们。

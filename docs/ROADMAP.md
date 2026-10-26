@@ -61,7 +61,7 @@ DoD：
 * [x] 装配层 `scheduler::decide()`：单一所有者持有 `Machine`/`Picker`，未测量首轮显式说明；
 * [x] `Outcome.changed` 由真实桶图比较得出 —— 决策未变即不产生任何数据面写入（这是「不做高频全量重建」
       在应用层的落点）；
-* [x] 276 个 lib 单测（其中 balancing 不变式 17 条）—— 这是 **M4 收口时**的数字，M5 之后为 329。
+* [x] 276 个 lib 单测（其中 balancing 不变式 17 条）—— 这是 **M4 收口时**的数字，M5 之后 329，M6 之后 350。
 
 ## M5 —— 规则层（游戏路由）（已完成）
 
@@ -100,22 +100,51 @@ DoD：
 * [ ] 动态集合的真实老化行为与 `dns_ttl_floor_s` 的观感一致性；
 * [ ] `ether saddr` 在目标设备 nft 版本上的实测（`probe_scripts` 的 `ether_sets`）。
 
-## M6 —— 事务层（未开始）← **当前落点**
+## M6 —— 事务层（代码完成，待真机）
 
-范围：`src/transaction.rs`，把 M2 的 `route::Applier` 与 `firewall::Nft` 编排成一次可回滚提交，
-并把 M5 的规则层真正接上（`rules::compile()` → `firewall::Input::games`）。
+范围：`src/transaction.rs`（2193 行，21 条单测），把 M2 的 `route::Applier` 与 `firewall::Nft`
+编排成一次可回滚提交，并把 M5 的规则层真正接上（`rules::compile()` → `firewall::Input::games`）。
 
 DoD：
 
-* [ ] **装配**：一次提交内把 `config → rules::compile → firewall::build → nft apply → route apply` 串起来，
-      中间任一步失败都不留下半套状态；
-* [ ] 单事务锁（同一时刻只允许一个提交者，含并发 RPC 场景）；
-* [ ] validate → plan → dry-run(`nft -c`) → apply → verify → commit last-good；任一步失败按 `Undo` 逆序回滚；
-* [ ] 残留检测：启动时先回收上一次崩溃留下的对象（按 `NS` 前缀与 `OUR_RTPROT` 判定所有权）；
-* [ ] 重启幂等：重复 apply 不产生重复规则（以 `Diff` 为空为证据，不是以「执行成功」为证据）；
-* [ ] 事务日志：每笔变更记 transaction id，与 `Applied.transaction` 对应。
+* [x] **装配**：一次提交内把 `config 校验 → 内核观测 → rules::compile → firewall::build → nft 试算
+      → route 下发/复核 → nft 下发/复核 → 快照` 串起来，中间任一步失败都不留下半套状态
+      （`Coordinator::run` 的八阶段固定顺序 + `submit_follows_the_fixed_stage_order_and_persists`）；
+* [x] 单事务锁：`AsyncMutex` 串行化所有提交，`is_busy()` 供 RPC 侧报告；
+      `second_committer_waits_for_the_first_to_finish` 用「先持锁再提交」证明第二个提交者卡在入口，
+      而不是插进内核操作中间；
+* [x] validate → plan → dry-run → apply → verify → commit last-good；任一步失败按 `Undo` **逆序**回滚
+      （`nft_verify_failure_rolls_back_nft_then_routes_in_reverse_order` 断言的回滚顺序是 nft 先、路由后，
+      与下发顺序相反）；
+* [x] 试算不过 / 被优先级冲突拦下 ⇒ **一次内核写入都不发生**
+      （`check_failure_leaves_kernel_and_state_files_untouched`、
+      `foreign_priority_conflict_blocks_before_any_side_effect`）；
+* [x] 路由失败绝不进 nft 提交（否则会出现「已打标记但无策略路由」的黑洞窗口）——
+      `route_apply_failure_never_reaches_nft_apply`；
+* [x] 复核不通过 ⇒ 不写快照；快照写失败 ⇒ **不回滚已验证的数据面**，但 `ok=false` 并写明
+      「数据面已生效但快照写入失败」（`snapshot_write_failure_is_not_reported_as_success`）；
+* [x] 残留检测：`Coordinator::reclaim()` 按 `NS` 前缀 / `RULE_MASK` / `OUR_RTPROT` / 表号区间判定所有权，
+      只删自己的对象，别人的规则与别人的路由保留并写进 `foreign`
+      （`reclaim_deletes_ours_and_keeps_everything_foreign`、`reclaim_tolerates_a_fresh_box_with_nothing_to_clean`）；
+* [x] 重启幂等：重复 apply 以 `Diff` 为空 **且** `applied.nft` 逐字节相同为证据判「无变更」，
+      但仍然执行 nft 试算与两侧复核（`second_submit_of_same_config_is_a_no_op_but_still_verified`，
+      调用序列 `[check, apply, check]`）；
+* [x] 事务日志：每笔变更记 transaction id（`T<毫秒>-<pid>-<序号>`），与 `Applied.transaction` 对应，
+      并写进 `state_dir/applied.nft` 所在快照；
+* [x] 规则层接线：`game_rule_from_config_reaches_the_nft_program` 从 UCI `config game` 段出发，
+      断言集合名、`ip daddr @set` 与 `smw:game:<slug>` 标签同时出现在最终程序里；
+* [x] 诚实性约束：`selection=best` 无择优结论进 `pending` 而不是编造线路
+      （`best_without_a_verdict_is_pending_not_fabricated`）；停用配置走「回收全部自有对象」而不是留着；
+* [x] 无 nft 通道时**拒绝** enabled 提交（半套状态比不更危险），但**允许** disable 提交（清场不需要 nft）
+      （`missing_nft_blocks_enabled_submit_but_allows_disable`）；
+* [ ] **待真机**：以上全部用 `FirewallExec::Sim` 走编排，它**不验证 nft 语法**；真机必须换
+      `FirewallExec::Real`（`nft -c -f` / `nft -f` / `nft -a list`）后重跑同一批结论（归 M10）。
 
-## M7 —— RPC 与守护进程（未开始）
+落地过程中修掉两处会被事务层暴露的真实缺陷（详见 `docs/PROGRESS.md` §6.10/6.11）：
+`firewall::build()` 生成了带 `comment` 的保护/绕行规则却没登记进 `Program::tags`（复核误报「多余标签」，
+把正确提交判成失败）；`config::diff()` 漏了 `global.hash_seed`（应用前变更清单少报一项）。
+
+## M7 —— RPC 与守护进程（未开始）← **当前落点**
 
 范围：`src/rpc/{mod,ubus}.rs`、`src/main.rs`
 

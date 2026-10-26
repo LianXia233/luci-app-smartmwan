@@ -4,7 +4,7 @@
 
 ```sh
 # 单元/回归（无需网络、无需 root、无需路由器）
-cargo test --offline --lib          # 期望 329 passed; 0 failed
+cargo test --offline --lib          # 期望 350 passed; 0 failed
 
 # Lint 与风格（提交前置条件，必须带 -D warnings）
 cargo clippy --offline --all-targets -- -D warnings # 期望 0 warning
@@ -36,8 +36,10 @@ smartmwand --restore-last-good       # 回到上一次成功状态
 | `scheduler` | 58 | 权重比例 3:1→桶 48:16；DEGRADED 半权重；不可用线路 0 桶；全零映射必带原因；`WeightedEcmp` 返回 `Unsupported`；`buckets=0` 报配置错；相同输入 0 搬动；交织场景搬动数在预算内；动态算法「采样不可信」降级注记；优势闸门 0 搬动；消失槽位强制清出；连接上限触发迁移；`interval_elapsed` 的 0 语义与回绕；回切四条件；强制切换与目标不可用时保留指令；主备顺序不捏造线路 |
 | `rules` | 51 | CIDR 网络位归一与按族分拣；坏值**报错不跳过**；端口拒绝 `0`/`0-1024`/逆序/取反；MAC 三种写法统一小写；域名拒通配符与 URL；slug 归一且去重确定性（`-2`/`-3`）；预置项**代码零内置**、缺 `source` 拒绝、空目的拒绝、文件内与跨文件重复 id 拒绝、坏文件整批失败、>512KiB 拒绝；域名注册表按域对账（增/删/保留/v6 跳过/满额拒绝/截断计数）、过期与两寿命陈旧窗口、**解析失败不清空旧元素**；`compile()` 合并语义（目的与域名并集、端口与协议规则赢、客户端条件只来自规则）、四种不产出情形、超上限报错不截断、`pin` 指向不存在/未启用槽位报错、mark 为 0 报错、无条件匹配报错；**端到端**：`compile()` 产物直接喂 `firewall::build()` 并断言集合声明与规则文本同时出现 |
 | `logging` | 5 | 等级过滤；环形缓冲上限与 `dropped()` 计数；轮转；敏感字段脱敏 |
+| `transaction` | 21 | 阶段顺序固定（validate→plan→nft 试算→路由下发→路由复核→nft 下发→nft 复核→快照）且阶段名对日志/RPC 稳定；单事务锁串行化（第二个提交者卡在入口）；试算失败不动内核也不留状态文件；路由失败绝不进 nft 提交；nft apply 失败回滚路由并如实报告回滚结果；nft 复核失败**按逆序**回滚（先 nft 后路由）且不写快照；外来优先级冲突在任何副作用之前拦下；无 nft 通道时拒绝 enabled 提交但允许停用；幂等第二次提交（`[check, apply, check]`，`changed=false`）；快照写失败不得报成功；停用⇒自有对象全清；`reclaim()` 只删自己的规则/路由/表并列出他人对象；游戏规则从 UCI 段一路落到最终 nft 文本；`best` 无结论进 `pending` 不编造线路；事务 id 唯一且写进快照。**限定**：nft 通道是 `FirewallExec::Sim` 替身，只验编排顺序，**不验证 nft 语法** |
 
-`tests/`（集成）目前为空 —— 计划见 §4。
+`tests/`（集成）目前为空 —— 计划见 §4。事务链路的编排结论现在全部落在 lib 单测里
+（`transaction` 21 条），集成测试要做的是「黄金样本回归 + 真实 `FirewallExec::Real`」，二者都还没写。
 
 ## 3. 工程测试（非功能）
 
@@ -52,7 +54,9 @@ smartmwand --restore-last-good       # 回到上一次成功状态
 ## 4. 计划中的测试（尚未编写）
 
 * `tests/golden_nft.rs`：固定配置 → 期望 nft 程序文本快照，防止规则生成回归；
-* `tests/config_tx.rs`：save→diff→apply→rollback→last-good 的端到端（用临时目录与假的 `RouteOps`/`Nft` 实现）；
+* `tests/config_tx.rs`：save→diff→apply→rollback→last-good 的端到端（用临时目录与假的 `RouteOps`/`Nft` 实现）。
+  **M6 之后这条的范围缩小了**：编排语义已在 `transaction` 的 21 条单测里覆盖（含替身通道），
+  集成测试要补的是「跨进程重启后从磁盘快照恢复」与「`FirewallExec::Real` 下的真实回滚」；
 * `tests/rpc_acl.rs`：信封格式、错误码稳定性、未授权 uid 被拒、读方法无副作用；
 * `tests/live_netlink.rs`：`#[ignore]` 的活体冒烟测试，只在有权限的 Linux 上显式运行，
   验证本项目的 netlink 解码与内核真实输出一致（沙箱内核可跑读路径，但不等于 OpenWrt 内核）。
@@ -63,12 +67,12 @@ smartmwand --restore-last-good       # 回到上一次成功状态
 |---|---|---|
 | 1 | 能在 OpenWrt 25.12+ 安装 | **不能** —— 无 Makefile/apk 产物（M9 未开始） |
 | 2 | 能构建 | **Rust 侧能**：`cargo build --offline` 通过；**OpenWrt 侧不能**：无 SDK |
-| 3 | 能测试 | 能：329 单测 + Lua 红线脚本；集成测试未写 |
+| 3 | 能测试 | 能：350 单测 + Lua 红线脚本；集成测试未写 |
 | 4 | 零 Lua | 是，且有自动化证明（两个方向实测） |
-| 5 | 后端为模块化 Rust 常驻服务 | 模块结构是；**常驻服务未实现**（`main.rs` 占位） |
+| 5 | 后端为模块化 Rust 常驻服务 | 模块结构是；**常驻服务未实现**（`main.rs` 占位）。事务层 `Coordinator` 已具备被常驻循环调用的形态（一把锁、`is_busy()`、返回 `Receipt`），缺的是外层循环 |
 | 6 | 前端 7 页可用 | **否**，一个都没写 |
-| 7 | 数据面真实生效 | **未验证**：机制存在、文本正确、有单测；沙箱无 `nft`/无内核模块，从未在设备上跑过 |
-| 8 | 安全清单落实 | 部分：注入/配置只读/残留/探测负载有实现与单测；**ACL、事务锁、轮询泄漏未实现**（`docs/SECURITY.md` §15） |
+| 7 | 数据面真实生效 | **未验证**：机制存在、文本正确、有单测；沙箱无 `nft`/无内核模块，从未在设备上跑过。事务层的 nft 通道在单测里是替身，本判据必须等 `FirewallExec::Real` 在真机上跑通才能改口 |
+| 8 | 安全清单落实 | 部分：注入/配置只读/残留/探测负载/并发事务锁有实现与单测；**ACL 与轮询泄漏未实现**（`docs/SECURITY.md` §15） |
 | 9 | 不把模拟数据当实时状态 | 机制上成立（后端对「未测量」「全灭」「降级」都产出显式 note 且不承载流量）；前端未实现，因此该判据要等 M8 复验 |
 | 10 | 列出未完成特性 | 是：`README.md`、`CHANGELOG.md`「已知缺失」、`docs/REQUIREMENTS.md` 状态列、`docs/PROGRESS.md` §4 |
 

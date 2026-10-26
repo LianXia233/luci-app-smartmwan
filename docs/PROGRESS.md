@@ -3,18 +3,20 @@
 > 本文件反映**当前工作树**。任何「已完成」都必须能用下面的命令复核；
 > 不能用命令复核的结论一律写成「待验证」。
 
-最后更新：0.4.0-dev 周期，规则层（M5）收口之后。
+最后更新：0.4.0-dev 周期，事务层（M6）收口之后。
 
 ## 1. 一句话状态
 
-后端五层（配置 / 系统交互 / 健康 / 调度 / 规则）已完成并有 329 个单元测试全绿；
-**事务层、RPC 层、守护进程入口、前端、打包尚未实现，因此本仓库现在不能装到路由器上用。**
-规则层尤其要说清：它的产物只被单测喂进数据面生成器，运行期还没有任何调用者（M6/M7 才接上）。
+后端六层（配置 / 系统交互 / 健康 / 调度 / 规则 / 事务）已完成并有 350 个单元测试全绿；
+**RPC 层、守护进程入口、前端、打包尚未实现，因此本仓库现在不能装到路由器上用。**
+规则层的落点变了：M5 时它的产物只被单测喂进数据面生成器，现在由事务层真正调用
+（`Coordinator::build_plan` → `rules::compile()` → `firewall::build()` → `route::Applier`）。
+但要说清：**事务层目前也只被单测调用**，运行期入口（读 UCI、按周期决策、对外提供 RPC）是 M7 的事。
 
 ## 2. 可复核指标
 
 ```sh
-cargo test --offline --lib                          # 期望：329 passed; 0 failed
+cargo test --offline --lib                          # 期望：350 passed; 0 failed
 cargo clippy --offline --all-targets -- -D warnings # 期望：0 警告
 cargo fmt --all -- --check                          # 期望：无差异
 cargo build --offline                               # 期望：0 警告
@@ -26,7 +28,7 @@ find src -name '*.rs' -print0 | xargs -0 cat | wc -l # 行数口径，见 §3 �
 
 | 命令 | 结果 |
 |---|---|
-| `cargo test --offline --lib` | `329 passed; 0 failed; 0 ignored` 用时 ~0.30s |
+| `cargo test --offline --lib` | `350 passed; 0 failed; 0 ignored` 用时 ~0.30s |
 | `./scripts/no-lua-check.sh` | 退出码 0；注入 `src/accidentally_controller.lua` 或 `require("luci.dispatcher")` 后退出码 1（已实测两个方向） |
 | `cargo clippy --offline --all-targets -- -D warnings` | **通过，0 警告**。工具链从 1.98.1 升到 1.99.1 后 clippy 组件才可用；首轮暴露 20 条，已按语义逐条处理（见提交 `32b97ad`） |
 | `cargo fmt --all -- --check` | **通过，无差异**（同一提交建立了 rustfmt 基线） |
@@ -38,18 +40,19 @@ find src -name '*.rs' -print0 | xargs -0 cat | wc -l # 行数口径，见 §3 �
 | 模块 | 行数 | 单测 | 状态 | 说明 |
 |---|---:|---:|---|---|
 | `src/lib.rs` | 340 | 6 | 完成 | fwmark 布局、错误类型、`NS` 前缀、版本常量 |
-| `src/config/` | 4020 | 51 | 完成 | UCI 文本解析/序列化、schema v4、迁移、校验、diff、last-good |
-| `src/system/` | 8233 | 109 | 代码完成 / 待真机 | netlink、route、interface、conntrack、exec、firewall |
+| `src/config/` | 4028 | 51 | 完成 | UCI 文本解析/序列化、schema v4、迁移、校验、diff、last-good |
+| `src/system/` | 8239 | 109 | 代码完成 / 待真机 | netlink、route、interface、conntrack、exec、firewall |
 | `src/health/` | 3275 | 49 | 完成 | 四类探测 + 滑窗指标 + 状态机 + Registry |
 | `src/scheduler/` | 3586 | 58 | 完成 | balancing / failover / latency / hysteresis / 装配层 |
-| `src/rules/` | 2270 | 51 | 完成（仅代码） | matchers / presets / dns_sets / compile；**运行期尚无调用者** |
+| `src/rules/` | 2270 | 51 | 完成 | matchers / presets / dns_sets / compile；**调用者是 `transaction.rs`** |
 | `src/logging.rs` | 539 | 5 | 完成 | 分级 + 环形缓冲 + 轮转 + 脱敏（`recent()`/`dropped()`） |
-| `src/transaction.rs` | 1 | 0 | **占位** | 校验→下发→回读→回滚编排 |
+| `src/transaction.rs` | 2193 | 21 | 代码完成 / 待真机 | 单事务锁 + 固定阶段编排 + 逆序回滚 + last-good 快照 + 残留回收 |
 | `src/rpc/` | 1 | 0 | **占位** | Unix socket JSON RPC + ACL + 审计 |
 | `src/main.rs` | 1 | 0 | **占位** | 守护进程入口与 tokio 监督循环 |
 
-合计 `src/**/*.rs` = 22,266 行。`rules` 的文件分布：`mod.rs` 721、`dns_sets.rs` 617、
-`matchers.rs` 476、`presets.rs` 456。
+合计 `src/**/*.rs` = 24,472 行。`transaction.rs` 的内部构成：非测试 1,449 行
+（`Stage`/`Decision`/`FirewallExec`/`Plan`/`Receipt`/`Coordinator`），
+`#[cfg(test)] mod tests` 起于第 1450 行，测试 744 行。
 
 > 行数口径注：本表改用 `find <dir> -name '*.rs' -print0 | xargs -0 cat | wc -l`
 > （原始文件行数，含空行与注释）。此前记录的四层数字（3524 / 7181 / 2904 / 3063，合计 17,494）
@@ -58,18 +61,19 @@ find src -name '*.rs' -print0 | xargs -0 cat | wc -l # 行数口径，见 §3 �
 按子模块的测试分布（用于判断「哪里测得厚、哪里薄」）：
 
 ```text
-system::firewall   25   config::validate    20   system::route        19
-health             18   system::interface   17   scheduler::balancing 17
-system::netlink    15   rules::dns_sets     15   system               15
-rules              14   scheduler           14   config               14
-scheduler::failover 12  rules::matchers     12   health::probe        12
-health::state      11   system::exec        10   rules::presets       10
-config::uci        10   scheduler::latency   9   system::conntrack    8
-health::metrics     8   config::schema        7  scheduler::hysteresis 6
-core_tests          6   logging               5
+system::firewall   25   config::validate    20   transaction          21
+system::route      19   health              18   system::interface   17
+scheduler::balancing 17  system              15   system::netlink     15
+rules::dns_sets    15   scheduler::tests    14   rules::tests        14
+config::tests      14   scheduler::failover 12   rules::matchers     12
+health::probe      12   health::state       11   system::exec        10
+rules::presets     10   config::uci         10   scheduler::latency   9
+system::conntrack   8   health::metrics      8   config::schema       7
+scheduler::hysteresis 6  logging              5   core_tests          6
 ```
 
-合计 329（`config 51 / system 109 / health 49 / scheduler 58 / rules 51 / logging 5 / lib 6`）。
+合计 350（`config 51 / system 109 / health 49 / scheduler 58 / rules 51 / logging 5 / lib 6 / transaction 21`）。
+复核命令：`cargo test --offline --lib -- --list` 后按模块前缀计数。
 
 ## 4. 目录现状（诚实版）
 
@@ -108,7 +112,9 @@ Makefile        不存在（打包未开始）
 | `e766b4f` | test(rules) | 补同文件重复 id 的单测 + 更正预置项 id 注释（+1 测试 → 328） |
 | `c2e8067` | fix(firewall) | 客户端条件全部失效时整条规则不下发，不再放宽到全 LAN（+1 测试 → 329） |
 | `2e8b3d1` | docs | M5 落地后的文档同步（数字全部重测） |
-| （本提交） | docs | 作者身份统一后的历史重写留痕 + 全部哈希引用更正 |
+| `73a5298` | docs | 作者身份统一后的历史重写留痕 + 全部哈希引用更正 |
+| `9abc322` | feat(transaction) | M6 事务层：固定阶段编排 + 逆序回滚 + last-good 快照 + 残留回收（+21 测试 → 350）；顺带修 `firewall::build()` 漏登记 tags、`config::diff()` 漏 `hash_seed` |
+| （本提交） | docs | M6 落地后的文档同步（数字全部重测） |
 
 > **关于本表的哈希**：2026-10-26 按仓库所有者的明确指示，用 `git filter-branch` 把全部提交的
 > author/committer 统一为 `LianXia233`（见 `docs/HANDOVER.md` §6），并 `--force-with-lease` 强推。
@@ -160,22 +166,40 @@ Makefile        不存在（打包未开始）
 只断言集合被声明、或者只断言「有警告产出」都不够，要断言最终规则文本里条件还在，
 或者规则整条不存在。
 
+10. **带 comment 的规则没登记进 `Program::tags`**（`9abc322`，M6 暴露）。`firewall::build()`
+    为保护源地址 / 绕行目的地址生成了 4 条带 `comment "smw:protected-src:v4"` 之类标签的规则，
+    却只把游戏与桶规则登记进 `tags`。M5 之前没人拿 `tags` 和内核实际规则做集合比对，所以漏登记
+    一直没被发现；事务层的复核阶段一比就露馅，报的是「多余标签」——**把一次本来正确的提交判成失败并回滚**。
+    现在生成规则与登记标签在同一处完成。教训：`tags` 不是元数据，是复核的判据，二者必须同源。
+11. **`config::diff()` 漏了 `global.hash_seed`**（`9abc322`）。改种子会重排全部新建连接的落线，
+    属于用户必须「在应用前看得见」的变更，但变更清单里不出现，UI 的「变更摘要」就会少报一项。
+    同类问题只能靠「diff 覆盖 schema 全部字段」的核对来防，M7 做 RPC 的 changeSummary 时按
+    `schema.rs` 的字段清单再核一遍。
+
+另有一条**测试设计的坑**记在这里（不是产品缺陷）：夹具里的「别人装的路由」原本用默认路由
+（`dst = None/0`）放进表 101，结果被本插件自己的表内默认路由按 (表号, 前缀) 覆盖掉
+（`ip route replace` 语义，真实内核也是如此），于是「保留别人的对象」这条断言永远测不到。
+改成独立前缀 `172.16.0.0/24` 后才真正跑通。写残留类测试时，**前缀必须和我们的不相撞**。
+
 ## 7. 下一步（严格顺序）
 
-1. **M6 事务层**（当前落点）：`src/transaction.rs` —— 把 `route::Applier` 与 `firewall::Nft`
-   收进单事务锁，validate → plan → dry-run → apply → verify → last-good，失败按 `Undo` 逆序回滚；
-   **并把规则层真正接上**：`rules::compile()` 的产物在这里进入 `firewall::Input::games`。
-2. **M7 RPC + main**：≥19 方法 + 统一信封 + peer-cred ACL + tokio 监督循环（含域名集合刷新环）+ CLI；
-3. **M8 前端**：先 ucode 桥与 ACL，再 7 个 JS 视图与 CSS；
-4. **M9 打包**：Makefile + apk + procd + `/etc/nftables.d` 片段（由代码生成，保证同源）+
+1. **M7 RPC + main**（当前落点）：`src/rpc/mod.rs` + `src/main.rs` —— ≥19 方法 + 统一信封 +
+   peer-cred ACL + 审计日志 + tokio 监督循环（探测环、调度环 `Scheduler::decide` → `transaction::submit`、
+   域名集合刷新环、桶轮换热替换走 `Nft::replace_rule` 而非整表重建）+ CLI + 优雅退出。
+   事务层的 `Coordinator` 就是为它准备的：`submit()` 返回 `Receipt` 而非 `Result`，
+   RPC 层必须把回执原样交给 UI，不能只回一个 bool。
+2. **M8 前端**：先 ucode 桥与 ACL，再 7 个 JS 视图与 CSS；
+3. **M9 打包**：Makefile + apk + procd + `/etc/nftables.d` 片段（由代码生成，保证同源）+
    `root/usr/share/smartmwan/presets/` 目录与 README（数据文件仍需权威来源）；
-5. **M10 自动化 + 真机**：只有在拿到设备后才能把 M2 的「待真机」条目改成「完成」。
+4. **M10 自动化 + 真机**：只有在拿到设备后才能把 M2/M6 的「待真机」条目改成「完成」——
+   事务层现在的 nft 通道在测试里是 `FirewallExec::Sim`（**不验证 nft 语法**），
+   真机上必须是 `FirewallExec::Real`，这是 M10 第一条要收的账。
 
 ## 8. 已知阻塞与风险
 
 | 项 | 影响 | 现状 |
 |---|---|---|
-| 沙箱无 `nft` / 无 netfilter 内核支持 | 无法验证 nftables 语法与 `ip rule` 下发 | 已把语法风险集中到 `firewall::probe_scripts()` 的能力探测，设备上不通过即降级为警告 |
+| 沙箱无 `nft` / 无 netfilter 内核支持 | 无法验证 nftables 语法与 `ip rule` 下发 | 已把语法风险集中到 `firewall::probe_scripts()` 的能力探测，设备上不通过即降级为警告；M6 之后又叠了一层：事务层的 nft 通道在单测里是 `FirewallExec::Sim`，**只验证编排顺序，不验证 nft 语法**，回执与文档都必须带着这句限定 |
 | ~~无 clippy / rustfmt~~ | ~~无法交付 Lint 与风格结论~~ | **本次已解除**：工具链升到 1.99.1 后组件可用，clippy 0 警告 + rustfmt 基线已建立（`32b97ad`） |
 | 无真机 | 5G 重拨、IPv6 绕过、断电重启幂等 等只能在 M10 验证 | 相关逻辑已有代码级防护，但结论必须留白 |
 | 游戏预置库需要权威来源 | 违反「不得编造服务器 IP/端口」的风险 | 加载器与校验已就位（`rules::presets`），但**不内置任何数据**；`source` 字段缺失即整条拒绝，单测 `no_preset_is_bundled_in_code` + `missing_source_is_error` 钉住 |

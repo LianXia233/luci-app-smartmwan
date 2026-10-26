@@ -6,11 +6,14 @@
 ## 1. 三十秒版
 
 * 这是 OpenWrt/ImmortalWrt **25.12+** 的多 WAN 智能选路插件，**后端 Rust、前端 LuCI JS + ucode，全项目零 Lua**；
-* 已完成：配置层、系统交互层、健康层、调度层、规则层（329 单测全绿）；
-* 未完成：事务层、RPC 层、守护进程入口、前端、打包。**现在装到路由器上不能用**；
-* 规则层要说清一句：它能产出 `GameSpec`，也有端到端单测喂进 `firewall::build()`，
-  但**运行期没有任何调用者** —— 接线是 M6/M7 的活，别把「代码完成」当成「设备上生效」；
-* 下一步唯一正确落点：`src/transaction.rs`（M6），在事务层里把规则层接上。
+* 已完成：配置层、系统交互层、健康层、调度层、规则层、**事务层**（350 单测全绿）；
+* 未完成：RPC 层、守护进程入口、前端、打包。**现在装到路由器上不能用**；
+* 规则层的说法变了：它现在**有调用者**（`transaction::Coordinator::build_plan()` →
+  `rules::compile()` → `firewall::build()`），端到端从 UCI 段一路断言到最终 nft 文本；
+  但**事务层自己也只被单测调用** —— 运行期入口（读 UCI、按周期决策、对外提供 RPC）是 M7 的活，
+  别把「代码完成」当成「设备上生效」；
+* 事务层的 nft 通道在单测里是 `FirewallExec::Sim`（**不验证 nft 语法**），真机必须换 `Real`；
+* 下一步唯一正确落点：`src/rpc/mod.rs` + `src/main.rs`（M7）。
 
 ## 2. 改了会出事的八条不变式
 
@@ -94,6 +97,36 @@ bit16..23 bucket、bit12..15 gen、bit8..11 class、bit0..7 slot。
 * slug 由**规则段名**决定（`matchers::slug_of(&rule.name)`），不是预置项 id；改 id 改不了集合名。
   slug 里**不能用 `clamp_str`**（它会追加 `…[截断 N→M 字节]` 这种人看的标记，而 slug 要进 nft 对象名）。
 
+### 2.8 事务层的六条不变式（M6 新增，动 `Coordinator` 前先读这段）
+
+* **阶段顺序不可调换**：`validate → plan → nft 试算 → 路由下发 → 路由复核 → nft 提交 → nft 复核 → 快照`。
+  两个顺序是有原因的，不是习惯：
+  nft 试算必须在**任何内核写入之前**（语法不过就不该碰内核）；
+  路由必须**先于** nft 提交（反过来会出现「包已打上 `0x05…` 标记、策略路由还没装」的黑洞窗口，
+  表现为突然全量走 main 表默认路由，且没有任何报错）。
+* **复核不过 ⇒ 不写快照**。`applied.json` / `applied.nft` 是下次启动恢复的依据，
+  写进一份没验证过的状态，等于把故障固化成「正常」。
+* **记账失败 ⇒ 不回滚已验证的数据面**，但 `ok=false` 且 `error` 写明「数据面已生效但快照写入失败」。
+  为了一个文件没写成就把通的上网路径拆掉，是把小故障升级成大故障 —— 这条是**故意**不对称的。
+* **回滚逆序 + 逐条报告**：`unwind()` 弹出顺序与下发顺序相反（先 nft 后路由）；
+  撤销失败不吞异常，全部写进 `Receipt.rollback` 并 `logging::error_ctx`。
+  **`rollback` 非空 = 内核状态需要人工确认**，UI 不得把它显示成「已恢复」。
+* **`Receipt` 不是 `Result`**：`submit()` 任何结局都返回回执（阶段记录 / issues / pending / rollback /
+  摘要 / nft 通道种类）。`Error` 只能表达一种结局，而「失败但已回滚」与「失败且未提交」
+  对运维是两个完全不同的动作。
+* **`FirewallExec::Sim` 只证明编排，不证明语法**：回执与文档都必须带上通道种类这句限定；
+  `FirewallExec::Absent`（设备上找不到 `nft`）时**拒绝 enabled 提交、允许停用提交**，
+  因为半套状态比不更危险，而清场不需要 nft。
+
+另外两条由事务层暴露出来的「同源要求」：
+
+* `firewall::Program::tags` **必须**涵盖程序里每一条带 `comment` 的规则 —— 复核是拿 `tags`
+  与内核实际规则做集合比对，漏登记会把一次正确提交判成「多余标签」失败并回滚（M6 就踩了这条）。
+  新增带标签的规则时，生成文本与登记 tag 写在同一处。
+* `config::diff()` **必须**覆盖 schema 全部字段 —— 它是应用前变更摘要的唯一来源。
+  `global.hash_seed` 曾被漏掉（改种子会重排全部新建连接却看不见），现已补上；
+  新增字段时按第 4 节「三处同改」再加第四处：`config/mod.rs::diff()`。
+
 ## 3. nftables / fw4 的事实依据（勿凭记忆改写）
 
 * firewall4 是 ucode 实现，表名 `inet fw4`；本插件用**独立的** `inet smw` 表，绝不碰 fw4 的对象；
@@ -174,19 +207,22 @@ UCI 文件 `/etc/config/smartmwan`，段类型 `smartmwan`(global) / `wan` / `ga
 
 ## 7. 接手后的正确动作序列
 
-1. 跑 `cargo test --offline --lib`（期望 **329**）+ `./scripts/no-lua-check.sh`（期望 0）确认基线；
+1. 跑 `cargo test --offline --lib`（期望 **350**）+ `./scripts/no-lua-check.sh`（期望 0）确认基线；
    再加 `cargo clippy --offline --all-targets -- -D warnings` 与 `cargo fmt --all -- --check`，两个都必须零；
-2. **M6 事务层** `src/transaction.rs`：单事务锁 → `config` 校验 → `rules::compile()` →
-   `firewall::build()` → `nft -c` 干跑（能力具备时）→ apply → verify → last-good，
-   失败按 `Undo` **逆序**回滚；启动时按 `NS` 前缀与 `OUR_RTPROT` 回收上次崩溃的残留。
-   规则层在这一步**第一次有运行期调用者**（`firewall::Input::games`）；
-3. **M7 RPC + main**：≥19 方法 + 统一信封 + `SO_PEERCRED` ACL + 审计 + tokio 监督循环
-   （探测环 / 调度环 / **域名集合刷新环** / SIGHUP 重载 / SIGTERM 优雅关停且关停必须撤销自己的对象）；
+2. **M6 事务层已完成**（`src/transaction.rs`，2193 行 / 21 单测）：八阶段固定顺序、单事务锁、
+   逆序回滚、last-good 快照、`reclaim()` 残留回收，规则层已在此接线。
+   动它之前先读 §2.8；它现在**只被单测调用**，别以为设备上已经在跑。
+3. **M7 RPC + main**（当前落点）：`src/rpc/mod.rs` + `src/main.rs` —— ≥19 方法 + 统一信封 +
+   `SO_PEERCRED` ACL + 审计 + tokio 监督循环（探测环 / 调度环 `Scheduler::decide()` →
+   `Coordinator::submit()` / **域名集合刷新环** / SIGHUP 重载 / SIGTERM 优雅关停且关停必须撤销自己的对象）。
+   装配要点：`Decision` 由 `Outcome` 提供（`bucket_map`/`picks`/`gen`/`now_ms`），
+   RPC 必须把 `Receipt` 原样回传（不得压缩成 bool），`is_busy()` 用来回答「现在能不能提交」。
 4. M8 前端、M9 打包、M10 真机，按 `docs/ROADMAP.md` 的 DoD 逐条收口。
 
-**不要在事务层之前先写 RPC/main** —— 那会让 RPC 暴露没有数据面支撑的方法。
+**M7 之后不要先写前端** —— 页面暴露的每个方法都必须有 RPC 与事务支撑，
+否则前端只能靠假数据填（这在交付判据里是明确禁止的）。
 `GameSpec` 契约（`src/system/firewall.rs:146`）已被 `build()` 消费、被规则层产出、
-被端到端单测串起来，**不要为了「装配方便」去改它**；要接的是调用方。
+被事务层串进端到端单测，**不要为了「装配方便」去改它**；要接的是调用方。
 
 ## 8. 绝对不要做的事
 
@@ -200,4 +236,8 @@ UCI 文件 `/etc/config/smartmwan`，段类型 `smartmwan`(global) / `wan` / `ga
   元素超上限不要截断，要报错；
 * 不要在匹配项拼接处加任何形式的 `filter`（`051829f` 那个缺陷就是这么来的）；
   集合引用必须带字段名；
+* 不要调换事务的阶段顺序，尤其**不要把 nft 提交放到路由之前**（黑洞窗口）或把快照写到复核之前；
+* 不要把 `FirewallExec::Sim` 跑绿的测试当成「nft 语法已验证」写进任何结论或 UI 文案；
+* 不要在快照写入失败时回滚已验证的数据面 —— 改成 `ok=false` 并说明原因，数据面留着；
+* 不要因为「省事」把 `Coordinator::submit()` 的返回值改成 `Result` 或让 RPC 只回 bool；
 * 不要把 `git reset --hard` / `push --force` 用在已有历史上；文档与代码问题用新提交修正。

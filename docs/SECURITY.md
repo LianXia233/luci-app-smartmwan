@@ -47,10 +47,15 @@
 * **威胁**：两个 `apply` 交错会留下半套规则；用户在 LuCI 连点两次比想象的更常见。
 * **机制**：
   1. `scheduler` 是唯一状态所有者（RPC 只能调它的方法，不得复制状态）；
-  2. 计划中的全局事务互斥锁串行化 `apply`/`rollback`/`reload`/`forceWan`；
+  2. `transaction::Coordinator` 内部一把 `AsyncMutex` 串行化所有 `submit`/`reclaim`；
+     计划的读法（`plan()`）与写入（`submit()`）共用同一把锁，因此「先看摘要再提交」之间
+     不会插进别人的内核改动。`is_busy()` 给 RPC 侧做即时回答；
   3. `route::Applier::apply()` 返回 `Vec<Undo>`，回滚按逆序执行，且把无法撤销的项写进 `leftovers`
-     明确报告，而不是假装成功。
-* **状态**：部分 —— 单写者设计与 `Undo` 机制已实现并有单测；锁在 `transaction`/`rpc` 层（M6/M7）。
+     明确报告，而不是假装成功；事务层的 `unwind()` 同样逆序（先 nft 后路由），
+     并把每一条回滚失败写进 `Receipt.rollback` —— **该字段非空就意味着内核状态需要人工确认**；
+  4. 提交前的闸门：`Plan::blocked()` 非空 ⇒ 直接返回拒绝回执，一次内核写入都不发生。
+* **状态**：机制已实现并有单测（`second_committer_waits_for_the_first_to_finish`、
+  `foreign_priority_conflict_blocks_before_any_side_effect`）；RPC 层的并发调用面在 M7 接入后才算闭合。
 
 ## 5. 重启后规则重复
 
@@ -186,10 +191,12 @@
 | 条目 | 是否可以声称安全 |
 |---|---|
 | 命令注入、配置只读、标记/路由一致性、残留清理、探测负载、日志脱敏 | 可以，依据是代码 + 单测（不含真机结论） |
-| 规则层「不放宽匹配面」（条件必须落进文本、超上限报错不截断、缺来源拒绝加载、不猜线路） | 可以，依据是代码 + 51 条单测（含端到端 `compiled_specs_are_accepted_by_firewall_build`）；但**运行期尚未接线**，结论只到「编译出的程序正确」 |
+| 规则层「不放宽匹配面」（条件必须落进文本、超上限报错不截断、缺来源拒绝加载、不猜线路） | 可以，依据是代码 + 51 条单测（含端到端 `compiled_specs_are_accepted_by_firewall_build`）；M6 起 `rules::compile()` 已被事务层真正调用（`game_rule_from_config_reaches_the_nft_program` 从 UCI 段一路断言到最终 nft 文本），但**运行期入口（谁来触发提交）仍待 M7** |
 | 预置项数据文件的**内容真实性** | **不可以** —— 代码只能验证来源声明存在、格式合法、数量有界，不能验证那份网段清单是否真的是游戏服务器 |
 | 断电重启幂等、5G 重拨、IPv6 实际转发路径、卸载彻底性 | **不可以**，只能说「机制存在」，需真机 |
 | `flags dynamic,timeout` 集合的真实老化、`ether saddr @set` 在 bridge/VLAN 上的匹配范围 | **不可以**，沙箱无 nft；规则文本已按能力探测降级，但设备行为未观测 |
-| ACL、并发事务锁、前端轮询 | **不可以**，尚未实现 |
+| 事务「失败不留半套状态」 | 可以声称**机制正确**：21 条事务单测覆盖「试算不过不动内核 / 路由失败不进 nft / 复核不过不写快照 / 回滚逆序且逐条报告 / 快照写失败不报成功」。但 nft 通道在单测里是 `FirewallExec::Sim`，**不验证 nft 语法**，真机结论待 M10 |
+| 并发事务锁 | 可以，依据是 `Coordinator` 的单把 `AsyncMutex` + `second_committer_waits_for_the_first_to_finish`；对外的并发调用面（RPC）在 M7 接入后才算闭合 |
+| ACL、前端轮询 | **不可以**，尚未实现（M7 / M8） |
 
 任何 UI 文案、README 或交付说明在 M7/M8/M9 完成前，都不得出现「权限受控」「事务安全」「无轮询泄漏」这类表述。
