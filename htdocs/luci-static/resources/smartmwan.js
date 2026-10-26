@@ -90,6 +90,23 @@ var smw = L.Class.extend({
 	/* ---------- 轮询生命周期 ---------- */
 
 	/**
+	 * 操作后的局部刷新：重跑 view.load() + view.render()，把新 DOM 替换进文档中的旧根容器。
+	 * LuCI 视图没有内建重绘；只调 view.render() 的返回值会被丢弃（没人挂载），
+	 * 必须自行替换 DOM。刷新期间按钮的禁用/恢复由 ui.createHandlerFn 自动处理。
+	 */
+	refresh: function(view, rootId) {
+		return Promise.resolve()
+			.then(function() { return view.load(); })
+			.then(function(data) { return view.render(data); })
+			.then(function(newRoot) {
+				var old = document.getElementById(rootId);
+				if (old != null && old.parentNode != null)
+					old.parentNode.replaceChild(newRoot, old);
+			})
+			.catch(function() { /* 刷新失败不打断操作反馈；下次进入页面会重新加载 */ });
+	},
+
+	/**
 	 * 注册轮询，保证：
 	 *   1. 同一模块同时只有一条活跃轮询（进入先摘旧的）；
 	 *   2. 离开页面后自行停止（下一 tick 发现根容器已不在文档即 poll.remove）。

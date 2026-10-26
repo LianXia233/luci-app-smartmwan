@@ -63,10 +63,12 @@ return view.extend({
 					: ''
 			]);
 
-			/* 维护模式开关：写方法，守护进程审计 */
+			/* 维护模式开关：写方法，守护进程审计。
+			 * 注意：createHandlerFn 自动禁用/恢复触发按钮（spinning + disabled），
+			 * 并把 event 追加为 handler 最后一个参数——不要自己传/管理 btn。 */
 			var btn = E('button', {
 				'class': 'btn cbi-button',
-				'click': ui.createHandlerFn(self, 'handleMaintenance', l.name, !l.maintenance, btn)
+				'click': ui.createHandlerFn(self, 'handleMaintenance', l.name, !l.maintenance)
 			}, [ l.maintenance ? '退出维护模式' : '进入维护模式' ]);
 
 			card.appendChild(E('div', { 'class': 'smw-line-actions' }, [ btn ]));
@@ -76,9 +78,8 @@ return view.extend({
 		return root;
 	},
 
-	handleMaintenance: function(wan, on, btn) {
+	handleMaintenance: function(wan, on) {
 		var self = this;
-		btn.disabled = true;
 		rpc.declare({
 			object: 'smartmwan',
 			method: 'setMaintenance',
@@ -91,10 +92,9 @@ return view.extend({
 					'操作失败：' + ((env && env.error && env.error.message) || '未知错误')
 				]), 'error');
 			}
-			self.render(self.load());
+			smartmwan.refresh(self, ROOT);
 		}).catch(function(e) {
 			ui.addNotification(null, E('p', [ 'RPC 失败：' + e ]), 'error');
-			btn.disabled = false;
 		});
 	},
 

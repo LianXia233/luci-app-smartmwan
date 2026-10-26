@@ -122,7 +122,7 @@ return view.extend({
 					'应用失败：' + ((env && env.error && env.error.message) || '未知错误')
 				]), 'error');
 			}
-			self.render(self.load());
+			smartmwan.refresh(self, ROOT);
 		}).catch(function(e) {
 			ui.addNotification(null, E('p', [ 'RPC 失败：' + e ]), 'error');
 		});
@@ -140,7 +140,7 @@ return view.extend({
 					'回滚失败：' + ((env && env.error && env.error.message) || '未知错误')
 				]), 'error');
 			}
-			self.render(self.load());
+			smartmwan.refresh(self, ROOT);
 		}).catch(function(e) {
 			ui.addNotification(null, E('p', [ 'RPC 失败：' + e ]), 'error');
 		});
@@ -156,7 +156,7 @@ return view.extend({
 					'重载失败：' + ((env && env.error && env.error.message) || '未知错误')
 				]), 'error');
 			}
-			self.render(self.load());
+			smartmwan.refresh(self, ROOT);
 		}).catch(function(e) {
 			ui.addNotification(null, E('p', [ 'RPC 失败：' + e ]), 'error');
 		});
