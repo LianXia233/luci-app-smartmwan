@@ -622,6 +622,12 @@ pub fn build(input: &Input) -> Result<Program> {
             "daddr"
         };
         chain_rules.push(format!("{key} {field} @{name} accept comment \"{tag}\""));
+        // 每条带 comment 的规则都必须登记进 tags：事务层用 tags 与内核实际规则做集合比对，
+        // 漏登记会在复核时报「多余标签」，把一次本来正确的提交判成失败。
+        p.tags.push(Tag {
+            comment: tag.to_string(),
+            chain: CHAIN_PREROUTING,
+        });
     }
 
     // ---- 游戏/客户端规则（按 priority 已排序）----

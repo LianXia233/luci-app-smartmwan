@@ -797,6 +797,14 @@ pub fn diff(old: &Config, new: &Config) -> Vec<Change> {
         new.global.buckets.to_string(),
         false,
     );
+    // 改 seed 会重排全部新建连接的落线，必须在应用前的变更清单里看得见；
+    // 它不改变「能不能上网」，所以不算高风险项。
+    cmp(
+        "global.hash_seed",
+        old.global.hash_seed.to_string(),
+        new.global.hash_seed.to_string(),
+        false,
+    );
     cmp(
         "global.dns_ttl_floor_s",
         old.global.dns_ttl_floor_s.to_string(),
