@@ -1,7 +1,8 @@
 # 交接文档
 
 面向**下一个接手的人**（或下一次重启会话的自己）。只写「不知道就会做错」的内容；
-能从代码读出来的不重复。读法顺序：本文件 → `docs/ARCHITECTURE.md` → `docs/PROGRESS.md`。
+能从代码读出来的不重复。读法顺序：本文件 → `docs/SPEC.md`（原始任务书）→
+`docs/ARCHITECTURE.md` → `docs/PROGRESS.md`（**§9 差距清单是当前工作起点**）。
 
 ## 1. 三十秒版
 
@@ -271,9 +272,11 @@ UCI 文件 `/etc/config/smartmwan`，段类型 `smartmwan`(global) / `wan` / `ga
    （define 名按 `include/package-pack.mk` 的 `BuildPackVariable` 实测，
    **自造名字会被静默忽略**）+ 同源安装期文件（`--dump-defaults` / `--dump-include`）。
    真实 SDK 构建已通过；`apk adbdump` 可核对脚本是否真的进了包。
-5. **M10 剩余项是当前落点**：双 WAN 均衡/主备/5G 重拨（第二线路接入后）、断电重启幂等、
-   浏览器侧人工确认；`tests/` 集成测试。真机第一轮结论与六处缺陷修复见
-   `docs/PROGRESS.md` §6.20–6.25 与 `docs/TESTING.md` §7。
+5. **M10 剩余项与任务书差距是当前落点**：完整差距清单（RPC 便捷形态 6 个、
+   前端配置编辑、游戏命中统计、diagnostics、`tests/` 六件套、真机剩余矩阵）
+   见 `docs/PROGRESS.md` §9，建议实施顺序也在那里；原始要求见 `docs/SPEC.md`。
+   真机第一轮结论与六处缺陷修复见 `docs/PROGRESS.md` §6.20–6.25 与
+   `docs/TESTING.md` §7。
 
 ## 8. 绝对不要做的事
 

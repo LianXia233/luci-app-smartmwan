@@ -3,7 +3,7 @@
 > 本文件反映**当前工作树**。任何「已完成」都必须能用下面的命令复核；
 > 不能用命令复核的结论一律写成「待验证」。
 
-最后更新：0.4.0-dev 周期，M9 打包（Makefile + apk 维护脚本 + 同源安装期文件 + GPLv3）落地之后。
+最后更新：0.4.0-dev 周期，M10 真机验收第一轮 + 与任务书（`docs/SPEC.md`）的全量差距审计之后。
 
 ## 1. 一句话状态
 
@@ -340,3 +340,82 @@ FirewallVerify 阶段对 `list chain` 报 no-such-table 没有豁免（FirewallA
 | 游戏预置库需要权威来源 | 违反「不得编造服务器 IP/端口」的风险 | 加载器与校验已就位（`rules::presets`），但**不内置任何数据**；`source` 字段缺失即整条拒绝，单测 `no_preset_is_bundled_in_code` + `missing_source_is_error` 钉住 |
 | `getaddrinfo` 不返回 TTL | 域名集合的元素寿命只能取一个下界，偏长会留残值、偏短会加重解析 | 用 `global.dns_ttl_floor_s`（默认 300s，校验 30..86400）作为折中并在 schema 注释、`dns_sets.rs` 模块头、`docs/CONFIGURATION.md` 三处如实写明「这是不完备而非最优」；真 TTL 需换解析器（会引入依赖面），暂未做 |
 | DNS 解析结果 ≠ 真实连接目的 | CDN 任播 / GeoDNS / 轮询会让域名规则命中不足 | 属产品固有限制，UI 与文档必须并列展示；DoH/DoT 流量无法从 53 端口识别，不做 SNI/DPI 识别 |
+
+## 9. 与任务书要求的差距审计（2026-10-27，下一阶段工作清单）
+
+> 原始任务书全文见 `docs/SPEC.md`；本节是对照全文逐条审计后的**未实现/部分实现清单**，
+> 是接手者的工作起点。核心链路（配置→事务→数据面→探测→RPC→页面）已全部真实可用
+> 并经真机验证；下列缺口均不影响已交付部分的安全性。
+
+### 9.1 RPC 接口形态（SPEC §9）——缺 6 个点名方法
+
+| 任务书方法 | 现状 | 达成路径 |
+|---|---|---|
+| `switch_mode` | 无专门方法 | `getConfig`→`save`→`apply` 语义等价 |
+| `set_primary` | 无专门方法 | 同上 |
+| `set_backup_order` | 无专门方法 | 同上 |
+| `set_algorithm` | 无专门方法 | 同上 |
+| `failback`（手动回切） | 无专门方法 | `forceWan(主线路)` 语义等价 |
+| `diagnostics`（聚合只读诊断） | **无** | 仅 getCapabilities/getLogs/CLI --check |
+
+其余 12 个要求的方法均已覆盖（统一信封 ✓）：status→getStatus、interfaces→getLines、
+get_config→getConfig、validate_config→validate、apply_config→apply、get_quality→getGameQuality、
+get_traffic→getTraffic、get_connections→getConnections、get_game_rules→getGames、
+update_game_rules→save、force_failover→forceWan、get_events→getLogs。
+
+### 9.2 LuCI 前端（SPEC §10.1）——配置编辑整块缺失（最大缺口）
+
+7 个页面目前全部是**只读展示 + 少量操作按钮**（全项目 0 个 input/select，
+`save` RPC 前端从未调用）。逐页缺口：
+
+* **负载均衡页**：算法选择、权重编辑、动态调度参数、会话保持设置——无编辑 UI；
+* **主备页**：主线路选择、备用顺序排序、回切策略/阈值编辑——无（强制切换/取消强制已有）；
+* **游戏页**：预设选择、自定义规则增删改、客户端匹配编辑、评分权重——无；
+* **系统设置页**：检测周期/超时编辑、日志等级调整、**服务启停按钮**、**配置导入/导出**、
+  诊断信息展示——全缺；
+* **总览页**：上下行实时速率（数据在 getTraffic 未展示）、抖动列、主线路/备用顺序展示、
+  最近切换事件列表——缺；
+* **游戏页**：规则命中情况展示——依赖 9.3 的命中统计；
+* **线路页**：WAN「自动发现→一键采用」——现为手写 UCI 段；
+* 轻量 SVG（线路拓扑/状态图标/流量趋势）——无（SPEC 为「使用」建议级）；
+* 键盘导航/焦点可见性/aria 属性——部分原生，未专门做。
+
+### 9.3 后端功能缺口（SPEC §6/§9）
+
+* **游戏规则命中统计**：游戏规则 nft 体无 `counter`，RPC 不返回命中数
+  （SPEC §6.x 与 §10.1-5 要求）；
+* **diagnostics 聚合诊断**：无（见 9.1）。
+
+### 9.4 测试缺口（SPEC §14）
+
+* `tests/` 目录**全空**——SPEC 列的 6 个集成测试文件
+  （config/health/scheduler/failover/rules/transaction）一个未写；
+* 真机矩阵只走了单线路：**七种算法真机分别验证、双 WAN 权重/主备切换/多级备用/
+  自动与手动回切、游戏命中与择优、IPv4/IPv6 分别验证、模组重拨/网关变化、
+  firewall4 重载后规则保持、断电重启幂等**——全部未做（部分依赖第二线路接入 eth0）；
+* 长时间运行资源占用、并发配置变更（单事务锁有单测）、高连接数调度性能——未测。
+
+### 9.5 小项（SPEC §3/§13）
+
+* `rust-toolchain.toml` 不存在（SPEC 目录建议项；`rust-version` 已在 Cargo.toml）；
+* 「首次启用前检查当前网络环境并明确提示」——应用流程有 diff + 风险二次确认，
+  但无专门的启用前环境检查提示。
+
+### 9.6 已确认合规的等价实现（不缺，避免接手者误判）
+
+* `src/rpc/ubus.rs` 取消：**记录在案的架构决策**（ucode 桥直连守护进程 Unix socket，
+  不引入 ubus 客户端依赖），见 `docs/ARCHITECTURE.md` §7；
+* `src/rules/games.rs` → `src/rules/presets.rs`：预置加载器功能等价；
+* `root/usr/share/luci/view/` → `htdocs/`：25.12 客户端渲染视图的正确路径；
+* 全局模式切换/主线路/备用顺序/算法设置的**数据模型与事务**全支持——只差
+  便捷 RPC 形态（9.1）与编辑 UI（9.2）。
+
+### 9.7 建议实施顺序（按 SPEC §15「数据面正确 > 功能完整 > UI 精细化」）
+
+1. 补 6 个 RPC（薄封装，事务层已支持）+ 游戏规则 `counter` 与命中数暴露；
+2. 前端配置编辑（复用现有 save/validate/diff/apply 链路；先设置页与均衡页，
+   再主备页与游戏页）；
+3. 系统设置页补齐（服务启停/导入导出/诊断展示）；
+4. 总览页补速率/抖动/事件列表；
+5. `tests/` 集成测试六件套；
+6. 真机剩余矩阵（部分依赖第二线路接入）。
