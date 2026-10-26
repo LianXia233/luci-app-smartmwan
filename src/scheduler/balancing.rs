@@ -548,3 +548,231 @@ fn fix_rounding(counts: &mut [usize], total: usize) {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    //! 桶分配是数据平面的直接输入，这里逐条守住「比例准确、总量守恒、
+    //! 搬迁受预算约束、必要搬迁不受预算约束」四条不变式。
+
+    use super::*;
+    use crate::scheduler::hysteresis::shift_limit;
+
+    fn cand(name: &str, slot: u8, weight: u32, usable: bool) -> Candidate {
+        Candidate {
+            name: name.into(),
+            slot,
+            weight,
+            priority: slot as u16 * 10,
+            usable,
+            degraded: false,
+            load: Load::default(),
+        }
+    }
+
+    /// 带可信采样与带宽上限的候选（动态算法只有在两者齐备时才会真的动态）。
+    fn measured(name: &str, slot: u8, rx_kbps: u64, limit_kbps: u32) -> Candidate {
+        Candidate {
+            load: Load { rx_kbps, tx_kbps: 0, down_kbps: limit_kbps, up_kbps: 0, conns: 0, new_conns: 0, conn_limit: 0, measured: true },
+            ..cand(name, slot, 1, true)
+        }
+    }
+
+    fn req<'a>(algorithm: Algorithm, cands: &'a [Candidate], previous: Option<&'a [u8]>) -> Request<'a> {
+        Request {
+            algorithm,
+            buckets: 64,
+            candidates: cands,
+            previous,
+            smoothing_permille: 700,
+            min_advantage_permille: 150,
+            interval_ok: true,
+        }
+    }
+
+    fn counts(a: &Assignment) -> Vec<(u8, usize)> {
+        a.share()
+    }
+
+    #[test]
+    fn weighted_allocation_is_proportional_and_conserves_buckets() {
+        let cands = vec![cand("wan1", 1, 3, true), cand("wan2", 2, 1, true)];
+        let a = assign(&req(Algorithm::WeightedHash, &cands, None)).unwrap();
+        assert_eq!(a.buckets.len(), 64);
+        assert_eq!(counts(&a), vec![(1, 48), (2, 16)], "3:1 必须精确落到 48:16");
+        assert_eq!(a.share().iter().map(|(_, n)| n).sum::<usize>(), 64, "桶数守恒");
+        assert!(a.buckets.iter().all(|b| *b != 0), "静态分配不能留下空桶");
+    }
+
+    #[test]
+    fn degraded_lines_are_halved_and_disabled_lines_get_nothing() {
+        let mut d = cand("wan1", 1, 1, true);
+        d.degraded = true;
+        let cands = vec![d, cand("wan2", 2, 1, true)];
+        let a = assign(&req(Algorithm::SrcIp, &cands, None)).unwrap();
+        // 半权 500 vs 1000 → 21 : 43（最大余额法把余数给小数部分大者）
+        // share() 按槽位升序返回：与 nft 桶映射表的书写顺序一致，便于逐条核对。
+        assert_eq!(counts(&a), vec![(1, 21), (2, 43)], "{:?}", counts(&a));
+
+        let cands2 = vec![cand("wan1", 1, 5, false), cand("wan2", 2, 1, true)];
+        let a2 = assign(&req(Algorithm::SrcIp, &cands2, None)).unwrap();
+        assert_eq!(counts(&a2), vec![(2, 64)], "不可用线路一个桶都不能给");
+    }
+
+    #[test]
+    fn fractional_weights_still_sum_exactly() {
+        let cands = vec![cand("a", 1, 1, true), cand("b", 2, 1, true), cand("c", 3, 1, true)];
+        let a = assign(&req(Algorithm::SrcIpDstIp, &cands, None)).unwrap();
+        let sum: usize = counts(&a).iter().map(|(_, n)| n).sum();
+        assert_eq!(sum, 64, "三条线路均分 64 桶时必须凑满而不是留空");
+        let max = counts(&a).iter().map(|(_, n)| *n).max().unwrap();
+        let min = counts(&a).iter().map(|(_, n)| *n).min().unwrap();
+        assert!(max - min <= 1, "均分结果最多相差 1 个桶: {:?}", counts(&a));
+    }
+
+    #[test]
+    fn all_zero_when_nothing_is_usable() {
+        let cands = vec![cand("wan1", 1, 1, false), cand("wan2", 2, 1, false)];
+        let a = assign(&req(Algorithm::SrcIp, &cands, None)).unwrap();
+        assert!(a.is_empty());
+        assert!(a.buckets.iter().all(|b| *b == 0));
+        assert!(a.reason.contains("没有可用线路"), "{}", a.reason);
+        assert!(!a.notes.is_empty(), "必须附带排查提示");
+    }
+
+    #[test]
+    fn weighted_ecmp_is_refused_rather_than_silently_approximated() {
+        let cands = vec![cand("wan1", 1, 1, true), cand("wan2", 2, 1, true)];
+        let e = assign(&req(Algorithm::WeightedEcmp, &cands, None)).unwrap_err();
+        assert!(matches!(e, Error::Unsupported(_)), "{e}");
+        assert!(e.to_string().contains("加权哈希"), "{e}");
+    }
+
+    #[test]
+    fn zero_buckets_is_a_configuration_error() {
+        let cands = vec![cand("wan1", 1, 1, true)];
+        let mut r = req(Algorithm::SrcIp, &cands, None);
+        r.buckets = 0;
+        assert!(matches!(assign(&r), Err(Error::Config(_))));
+    }
+
+    #[test]
+    fn same_weights_same_state_produce_zero_churn() {
+        let cands = vec![cand("wan1", 1, 2, true), cand("wan2", 2, 1, true)];
+        let first = assign(&req(Algorithm::WeightedHash, &cands, None)).unwrap();
+        let second = assign(&req(Algorithm::WeightedHash, &cands, Some(&first.buckets))).unwrap();
+        assert_eq!(second.moved, 0, "同样的输入必须得到同样的桶图，否则每次重排都会打断新建连接分布");
+        assert_eq!(second.buckets, first.buckets);
+    }
+
+    #[test]
+    fn interleaved_fill_minimises_churn_when_weight_changes() {
+        // 1:1 → 2:1：交错铺开会打散变化，连续区段铺开会整段搬迁。
+        let before = vec![cand("wan1", 1, 1, true), cand("wan2", 2, 1, true)];
+        let a = assign(&req(Algorithm::WeightedHash, &before, None)).unwrap();
+        let after = vec![cand("wan1", 1, 2, true), cand("wan2", 2, 1, true)];
+        let b = assign(&req(Algorithm::WeightedHash, &after, Some(&a.buckets))).unwrap();
+        assert_eq!(counts(&b), vec![(1, 43), (2, 21)], "2:1 应为 43:21（最大余额法）");
+        // 理论下限 = wan2 必须让出的桶数（32 − 21 = 11）；交错铺开不应显著超过它。
+        assert!(b.moved >= 11, "权重变了不可能零变更: {}", b.moved);
+        assert!(b.moved <= 22, "交错铺开应把变更压到接近理论下限 11，实测 {}", b.moved);
+    }
+
+    #[test]
+    fn dynamic_algorithm_degrades_when_samples_are_untrustworthy() {
+        let cands = vec![cand("wan1", 1, 1, true), cand("wan2", 2, 3, true)];
+        let a = assign(&req(Algorithm::LeastTraffic, &cands, None)).unwrap();
+        assert!(a.notes.iter().any(|n| n.contains("采样不可信")), "{:?}", a.notes);
+        assert!(a.reason.contains("动态降级"), "{}", a.reason);
+        // 退回权重后仍是 1:3 的精确分配
+        assert_eq!(counts(&a), vec![(1, 16), (2, 48)]);
+    }
+
+    #[test]
+    fn dynamic_moves_only_within_shift_budget() {
+        let cands = vec![measured("wan1", 1, 900_000, 1_000_000), measured("wan2", 2, 100_000, 1_000_000)];
+        let previous = vec![1u8; 64];
+        let a = assign(&req(Algorithm::LeastTraffic, &cands, Some(&previous))).unwrap();
+        let budget = shift_limit(64, 300);
+        assert_eq!(a.moved, budget, "首轮应按预算上限搬动，不能一次性全量重建");
+        assert_eq!(counts(&a).iter().find(|(s, _)| *s == 2).unwrap().1, budget);
+        // 目标态是 6:58，本轮只应搬到预算为止
+        assert!(counts(&a).iter().find(|(s, _)| *s == 1).unwrap().1 > 6, "剩余差距留给后续轮次");
+    }
+
+    #[test]
+    fn dynamic_needs_a_visible_advantage_before_moving() {
+        // wan1 更空（spare 600 vs 500）：把桶从 wan1 搬去 wan2 没有收益
+        let cands = vec![measured("wan1", 1, 400_000, 1_000_000), measured("wan2", 2, 500_000, 1_000_000)];
+        let previous = vec![1u8; 64];
+        let a = assign(&req(Algorithm::LeastTraffic, &cands, Some(&previous))).unwrap();
+        assert_eq!(a.moved, 0, "优势不足不得搬动: {:?}", counts(&a));
+        assert!(a.buckets.iter().all(|b| *b == 1));
+    }
+
+    #[test]
+    fn necessary_eviction_ignores_interval_and_budget() {
+        // 上一轮全部指向 slot 3，而 3 已经不可用：64 个桶必须立刻离开
+        let cands = vec![measured("wan1", 1, 100_000, 1_000_000), measured("wan2", 2, 100_000, 1_000_000)];
+        let previous = vec![3u8; 64];
+        let mut r = req(Algorithm::LeastTraffic, &cands, Some(&previous));
+        r.interval_ok = false;
+        let a = assign(&r).unwrap();
+        assert!(a.buckets.iter().all(|b| *b != 3), "线路没了还留着标记就是黑洞");
+        assert_eq!(a.moved, 64);
+        assert!(a.reason.contains("强制搬离"), "{}", a.reason);
+    }
+
+    #[test]
+    fn ordinary_moves_are_held_back_before_the_rebalance_interval() {
+        let cands = vec![measured("wan1", 1, 900_000, 1_000_000), measured("wan2", 2, 100_000, 1_000_000)];
+        let previous = vec![1u8; 64];
+        let mut r = req(Algorithm::LeastTraffic, &cands, Some(&previous));
+        r.interval_ok = false;
+        let a = assign(&r).unwrap();
+        assert_eq!(a.moved, 0, "未到重排间隔且没有必要搬迁时，数据面必须保持不动");
+        assert!(a.notes.iter().any(|n| n.contains("未到最小重排间隔")), "{:?}", a.notes);
+    }
+
+    #[test]
+    fn connection_capped_line_is_evicted_even_without_advantage() {
+        // 两条线路剩余容量接近，但 wan1 已经撞到连接数上限：仍要搬
+        let mut a1 = cand("wan1", 1, 1, true);
+        a1.load = Load { conns: 1000, conn_limit: 1000, down_kbps: 1_000_000, rx_kbps: 500_000, measured: true, ..Default::default() };
+        let mut a2 = cand("wan2", 2, 1, true);
+        a2.load = Load { conns: 100, conn_limit: 1000, down_kbps: 1_000_000, rx_kbps: 520_000, measured: true, ..Default::default() };
+        let cands = vec![a1, a2];
+        let previous = vec![1u8; 64];
+        let out = assign(&req(Algorithm::LeastNewConnections, &cands, Some(&previous))).unwrap();
+        assert!(out.moved > 0, "连接数封顶必须触发搬迁: {:?}", out.moved);
+        assert!(out.buckets.iter().any(|b| *b == 2));
+    }
+
+    #[test]
+    fn spare_permille_refuses_to_guess_without_limits() {
+        let l = Load { rx_kbps: 1000, measured: true, ..Default::default() };
+        assert_eq!(l.used_permille(), None, "没配带宽上限时不能编造占用率");
+        assert_eq!(l.spare_permille(SpareMode::Traffic), None);
+        assert_eq!(l.conn_permille(), None);
+        assert!(!l.conn_capped());
+        let l2 = Load { rx_kbps: 2_000_000, down_kbps: 1_000, ..Default::default() };
+        assert_eq!(l2.used_permille(), Some(1000), "超上限必须钳位而不是溢出");
+        assert_eq!(l2.spare_permille(SpareMode::Traffic), Some(1), "留 1‰ 保证还能拿到桶");
+    }
+
+    #[test]
+    fn display_and_reasons_are_human_readable() {
+        let cands = vec![cand("wan1", 1, 1, true)];
+        let a = assign(&req(Algorithm::SrcIpSrcPort, &cands, None)).unwrap();
+        let text = a.to_string();
+        assert!(text.contains("wan1=64桶"), "{text}");
+        assert!(text.contains("变化"), "{text}");
+    }
+
+    #[test]
+    fn non_hash_algorithm_still_gets_a_weight_note() {
+        // 动态算法降级路径之外的组合：静态函数被直接调用时要提示语义不符
+        let cands = vec![cand("wan1", 1, 1, true), cand("wan2", 2, 1, true)];
+        let a = assign(&req(Algorithm::LeastTraffic, &cands, None)).unwrap();
+        assert!(a.notes.iter().any(|n| n.contains("采样不可信") || n.contains("不属于静态哈希")), "{:?}", a.notes);
+    }
+}
