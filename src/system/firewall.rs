@@ -280,6 +280,65 @@ pub fn capabilities_from_probe(version: &str, ok: &[String]) -> Capabilities {
     }
 }
 
+/// 在设备上做一次能力探测，返回可直接交给 [`build`] 的能力表。
+///
+/// 每条探测脚本都以一次性表 `inet smwprobe` 为目标、只走 `nft -c`（试算不提交），
+/// 因此对现网零副作用；这也是「语法可用性只能在真机证实」这件事唯一的落地方式
+/// （沙箱里没有 `nft`，也没有 netfilter）。
+///
+/// 单条探测失败**不是错误**：它只表示该语法在本机不用，程序会走降级路径，
+/// 降级说明由 [`build`] 写进 `Program::issues`，必须让用户看得见。
+/// 失败清单同时进日志，否则「为什么游戏域名规则没生效」这类问题无从下手。
+pub async fn probe_caps(nft: &Nft) -> Capabilities {
+    let version = match nft.version().await {
+        Some(v) if !v.trim().is_empty() => crate::clamp_str(v.trim(), 80),
+        _ => {
+            // 版本号只用于诊断，拿不到不该放弃整轮探测；但必须留痕，
+            // 否则 UI 上「版本：空」会被误读成「没装 nft」。
+            logging::warn_ctx(
+                "firewall",
+                "version",
+                "nft --version 未取得版本号，能力探测继续（版本号仅用于诊断）",
+                &[],
+            );
+            String::new()
+        }
+    };
+    let scripts = probe_scripts();
+    let mut ok: Vec<String> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
+    for (key, script, desc) in &scripts {
+        match nft.check(script).await {
+            Ok(()) => ok.push((*key).to_string()),
+            Err(e) => failed.push(format!(
+                "{key}（{desc}）：{}",
+                crate::clamp_str(&e.to_string(), 160)
+            )),
+        }
+    }
+    if failed.is_empty() {
+        logging::info_ctx(
+            "firewall",
+            "capabilities",
+            &format!("能力探测通过 {}/{} 项", ok.len(), scripts.len()),
+            &[("version", version.clone())],
+        );
+    } else {
+        logging::warn_ctx(
+            "firewall",
+            "capabilities",
+            &format!(
+                "{}/{} 项语法在本设备不可用，nft 程序将按降级路径生成：{}",
+                failed.len(),
+                scripts.len(),
+                crate::clamp_str(&failed.join("；"), 512)
+            ),
+            &[("version", version.clone())],
+        );
+    }
+    capabilities_from_probe(&version, &ok)
+}
+
 /// 构造 nft 程序的输入。
 pub struct Input<'a> {
     pub algorithm: Algorithm,
@@ -1319,37 +1378,74 @@ impl Nft {
         }
     }
 
-    /// 读取版本（诊断用）。失败不阻断主流程，但必须记日志。
+    /// 读取版本（诊断用）。**取不到一律返回 `None`**，绝不返回空串冒充「版本为空」。
+    ///
+    /// 失败不阻断主流程（版本号只是诊断信息），但每一种失败都要留下一条日志，
+    /// 否则真机上「nft 装了但 --version 报错」会被显示成「没装 nft」。
     pub async fn version(&self) -> Option<String> {
-        let inv = Invocation::with_options(
+        let inv = match Invocation::with_options(
             &self.program,
             &["--version"],
             self.timeout,
             4096,
             "nft-version",
-        )
-        .ok()?;
-        exec::run(&inv).await.ok().map(|o| {
-            let t = o
-                .stdout
-                .trim()
-                .lines()
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_string();
+        ) {
+            Ok(i) => i,
+            Err(e) => {
+                logging::warn_ctx(
+                    "firewall",
+                    "version",
+                    &format!("无法构造 nft --version 调用：{e}"),
+                    &[],
+                );
+                return None;
+            }
+        };
+        let o = match exec::run(&inv).await {
+            Ok(o) => o,
+            Err(e) => {
+                logging::warn_ctx(
+                    "firewall",
+                    "version",
+                    &format!("nft --version 执行失败：{e}"),
+                    &[],
+                );
+                return None;
+            }
+        };
+        if !o.ok() {
+            logging::warn_ctx(
+                "firewall",
+                "version",
+                &format!(
+                    "nft --version 退出码 {}：{}",
+                    o.status,
+                    first_error_line(&o.stderr, &o.stdout)
+                ),
+                &[],
+            );
+            return None;
+        }
+        let pick = |s: &str| s.trim().lines().next().unwrap_or("").trim().to_string();
+        // 有些 nft 构建把版本信息写到 stderr，两边都要看；都空才算取不到。
+        let text = {
+            let t = pick(&o.stdout);
             if t.is_empty() {
-                o.stderr
-                    .trim()
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .to_string()
+                pick(&o.stderr)
             } else {
                 t
             }
-        })
+        };
+        if text.is_empty() {
+            logging::warn_ctx(
+                "firewall",
+                "version",
+                "nft --version 退出 0 但没有输出，按「版本未知」处理",
+                &[],
+            );
+            return None;
+        }
+        Some(text)
     }
 
     /// 添加动态集合元素（域名解析结果）。已存在的元素由 nft 报 EEXIST，视为成功。
@@ -2251,5 +2347,63 @@ mod tests {
             Ok(n) => assert!(n.program().contains("nft")),
             Err(e) => assert!(e.to_string().contains("nft"), "{e}"),
         }
+    }
+
+    /// 能力探测的**判定逻辑**两端：全通过 ⇒ 高风险语法可用；全失败 ⇒ 一律保守关闭。
+    ///
+    /// 沙箱里没有 `nft` 也没有 netfilter，所以注入 `/bin/true`（恒退出 0）与
+    /// `/bin/false`（恒退出 1）。这两条测试证明的是「探测结果如何转成能力表」，
+    /// **不证明本机语法可用** —— 后者只能在真机上由 `--capabilities` 得出。
+    #[tokio::test]
+    async fn probe_caps_enables_everything_when_checks_pass() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let nft = Nft::with_program("/bin/true", dir.path());
+        let caps = probe_caps(&nft).await;
+        assert!(caps.nft_exists);
+        // jhash_map 以 ct_mark_range 为前提，两者同时通过才为真。
+        assert!(caps.ct_mark_range && caps.jhash_map);
+        for (name, on) in [
+            ("th_payload", caps.th_payload),
+            ("dyn_timeout_sets", caps.dyn_timeout_sets),
+            ("route_hook_output", caps.route_hook_output),
+            ("ether_sets", caps.ether_sets),
+            ("comments", caps.comments),
+            ("jhash_seed", caps.jhash_seed),
+        ] {
+            assert!(on, "全部试算通过时 {name} 仍被关闭，说明键名对不上");
+        }
+    }
+
+    #[tokio::test]
+    async fn probe_caps_keeps_conservative_defaults_when_checks_fail() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let nft = Nft::with_program("/bin/false", dir.path());
+        let caps = probe_caps(&nft).await;
+        // 「nft 在但语法未证实」与「nft 不在」是两件事：前者 nft_exists 仍为真，
+        // 但所有可选语法一律关闭，程序会走降级路径并给出可见的 Warning。
+        assert!(caps.nft_exists);
+        assert!(!caps.ct_mark_range && !caps.jhash_map);
+        assert!(!caps.comments, "comment 未证实就不能启用 handle 定位路径");
+        assert!(!caps.dyn_timeout_sets && !caps.route_hook_output && !caps.jhash_seed);
+        assert!(!caps.th_payload && !caps.ether_sets);
+    }
+
+    #[tokio::test]
+    async fn version_only_reports_a_real_string() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // 退出码非 0 ⇒ None。旧写法会把 `exec::run` 的成功（子进程跑完了）误当成
+        // 「取到版本」，于是返回 Some("")，UI 上就成了「版本为空」这种无法解释的状态。
+        assert!(
+            Nft::with_program("/bin/false", dir.path())
+                .version()
+                .await
+                .is_none(),
+            "nft --version 失败时必须明确说取不到"
+        );
+        // 退出 0 且有输出 ⇒ 拿到文本（用 echo 注入，证明解析路径本身可用）。
+        assert!(Nft::with_program("/bin/echo", dir.path())
+            .version()
+            .await
+            .is_some());
     }
 }

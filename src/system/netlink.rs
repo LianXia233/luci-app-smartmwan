@@ -1043,6 +1043,49 @@ impl RouteOps for BlockingOps<'_> {
     }
 }
 
+/// 拥有句柄的 `RouteOps` 实现（生产路径）。
+///
+/// 为什么不是直接给 `NetlinkHandle` 实现 trait：`NetlinkHandle` 上已有一组同名 **async**
+/// 方法， inherent 方法优先于 trait 方法， concrete 类型上调用到的会是 async 那个，
+/// 极易误用。这里用一个新类型显式表达「我要同步视图」，并且它能装进
+/// `Arc<dyn RouteOps>`（`BlockingOps` 借用句柄，做不到）。
+///
+/// 语义与 [`BlockingOps`] 完全一致：每个方法都在同一把互斥锁下做一次内核操作。
+/// 调用方必须已经处在 `spawn_blocking`（或另一个阻塞线程）里，否则会把 tokio
+/// 工作线程压在锁上。
+#[derive(Clone)]
+pub struct HandleOps(pub NetlinkHandle);
+
+impl RouteOps for HandleOps {
+    fn dump_rules(&self, family: Family) -> Result<Vec<RuleEntry>> {
+        self.0.sync(|c| c.dump_rules(family))?
+    }
+
+    fn dump_routes(&self, family: Family, table: u32) -> Result<Vec<RouteEntry>> {
+        self.0.sync(|c| c.dump_routes(family, table))?
+    }
+
+    fn dump_addresses(&self, family: Family) -> Result<Vec<AddrEntry>> {
+        self.0.sync(|c| c.dump_addresses(family))?
+    }
+
+    fn add_rule(&self, spec: &RuleSpec) -> Result<()> {
+        self.0.sync(|c| c.add_rule(spec))?
+    }
+
+    fn del_rule(&self, spec: &RuleSpec) -> Result<()> {
+        self.0.sync(|c| c.del_rule(spec))?
+    }
+
+    fn add_route(&self, spec: &RouteSpec) -> Result<()> {
+        self.0.sync(|c| c.add_route(spec))?
+    }
+
+    fn del_route(&self, spec: &RouteSpec) -> Result<()> {
+        self.0.sync(|c| c.del_route(spec))?
+    }
+}
+
 /// 阻塞式 netlink 连接，靠 `SO_RCVTIMEO`/`SO_SNDTIMEO` 保证不会永久挂起。
 ///
 /// 调用方必须在 `tokio::task::spawn_blocking` 里使用它（见 `system::mod::blocking`），
