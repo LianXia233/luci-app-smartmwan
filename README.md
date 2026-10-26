@@ -48,14 +48,16 @@ tests/                  跨层集成测试
 ## 开发环境命令
 
 ```sh
-cargo test --offline --lib          # 单元测试（沙箱内可跑，276 条）
-cargo build --offline --release     # 构建 smartmwand
-./scripts/no-lua-check.sh           # Lua 禁用扫描（项目自有文件维度）
+cargo test --offline --lib                           # 单元测试（沙箱内可跑，276 条）
+cargo clippy --offline --all-targets -- -D warnings  # Lint：必须 0 警告
+cargo fmt --all -- --check                           # 风格：必须无差异
+cargo build --offline --release                      # 构建 smartmwand
+./scripts/no-lua-check.sh                            # Lua 禁用扫描（三个维度）
 ```
 
-本沙箱**没有** `cargo-clippy`、`cargo-fmt`、`nft` 二进制，也没有 root 权限：
-这三件事直接限制了「静态检查」「数据面语法验证」「真机验证」，
-详见 [docs/TESTING.md](docs/TESTING.md#本环境的限制)。
+本沙箱**没有** `nft` 二进制，也没有 netfilter 内核支持 —— 这限制了「数据面语法验证」与
+「真机验证」两件事；`clippy` / `rustfmt` 现在可用，因此 Lint 与风格结论是可以交付的。
+详见 [docs/TESTING.md](docs/TESTING.md)。
 
 ## 设计要点（读代码前先读这段）
 

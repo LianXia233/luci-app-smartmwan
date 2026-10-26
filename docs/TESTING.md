@@ -1,0 +1,86 @@
+# 测试与验收
+
+## 1. 命令一览
+
+```sh
+# 单元/回归（无需网络、无需 root、无需路由器）
+cargo test --offline --lib          # 期望 276 passed; 0 failed
+
+# Lint 与风格（提交前置条件，必须带 -D warnings）
+cargo clippy --offline --all-targets -- -D warnings # 期望 0 warning
+cargo fmt --all -- --check                    # 期望 无差异
+
+# 构建
+cargo build --offline                # 期望 无 warning
+cargo build --offline --release      # 发布前基线
+
+# 工程红线（禁 Lua）
+./scripts/no-lua-check.sh            # 期望 退出码 0
+
+# 需要 root + OpenWrt 内核环境（沙箱做不到，见 §5）
+smartmwand --check                   # 只做校验，不写内核
+smartmwand --dump-nft                # 打印将要下发的 nft 程序
+smartmwand --capabilities            # 在设备上实测 nft 语法能力
+smartmwand --once                    # 单轮：探测→决策→下发→回读，不常驻
+smartmwand --restore-last-good       # 回到上一次成功状态
+```
+
+## 2. 测试矩阵（覆盖到的层与不变式）
+
+| 层 | 测试数 | 关键不变式 |
+|---|---:|---|
+| `lib` 核心 | 6 | 标记字段往返；所有权区间覆盖全部合法标记且不含他人典型值；`RULE_MASK` 只隔离槽位；UTF-8 安全截断；槽位 0 被拒 |
+| `config` | 51 | UCI 文本 round-trip；未知键保留；缺字段落默认；迁移旧键；枚举非法值报错而非静默回退；默认关闭；diff/fingerprint 稳定；20 条校验规则（含同优先级规则范围重叠） |
+| `system` | 107 | netlink 报文编解码逐字段；`plan()` 只在 usable 时成对产出规则与路由；`Diff::blocking()` 拦住 Error 级冲突；`Applier` 回滚逆序；优先级带所有权判定；`exec` 超时杀进程/白名单/输出封顶；conntrack 行数上限与标记解析；nft 程序文本黄金样本（含 IPv6 关闭不建 v6 集合、占位文件单一 hook） |
+| `health` | 49 | 探测四类均绑定设备与源地址；`Unsupported`/`LocalError` 不改状态；并发额度如实反映配置；取消路径能真正中断批次；滑窗指标与置信门槛；状态机全部迁移边 + 预热 + 时间驱动 `tick()` |
+| `scheduler` | 58 | 权重比例 3:1→桶 48:16；DEGRADED 半权重；不可用线路 0 桶；全零映射必带原因；`WeightedEcmp` 返回 `Unsupported`；`buckets=0` 报配置错；相同输入 0 搬动；交织场景搬动数在预算内；动态算法「采样不可信」降级注记；优势闸门 0 搬动；消失槽位强制清出；连接上限触发迁移；`interval_elapsed` 的 0 语义与回绕；回切四条件；强制切换与目标不可用时保留指令；主备顺序不捏造线路 |
+| `logging` | 5 | 等级过滤；环形缓冲上限与 `dropped()` 计数；轮转；敏感字段脱敏 |
+
+`tests/`（集成）目前为空 —— 计划见 §4。
+
+## 3. 工程测试（非功能）
+
+| 检查 | 命令 | 本环境实测 |
+|---|---|---|
+| 零 Lua（文件 / `require("luci.*")` / Makefile 依赖） | `./scripts/no-lua-check.sh` | 干净树退出 0；注入 `src/accidentally_controller.lua` 或 `require("luci.dispatcher")` 后退出 1（**两个方向都实测过**） |
+| 依赖面 | `cargo tree` | 运行依赖仅 tokio / libc / serde / serde_json / thiserror |
+| 可复现 | `Cargo.lock` 入库 | 是 |
+| 无 shell 拼接 | 代码审查 + `exec.rs` 测试 | 唯一入口，参数数组、绝对路径白名单 |
+| 许可证 | `LICENSE` | GPLv2 全文（含「或更高版本」模板），清单声明 `GPL-2.0-or-later` |
+
+## 4. 计划中的测试（尚未编写）
+
+* `tests/golden_nft.rs`：固定配置 → 期望 nft 程序文本快照，防止规则生成回归；
+* `tests/config_tx.rs`：save→diff→apply→rollback→last-good 的端到端（用临时目录与假的 `RouteOps`/`Nft` 实现）；
+* `tests/rpc_acl.rs`：信封格式、错误码稳定性、未授权 uid 被拒、读方法无副作用；
+* `tests/live_netlink.rs`：`#[ignore]` 的活体冒烟测试，只在有权限的 Linux 上显式运行，
+  验证本项目的 netlink 解码与内核真实输出一致（沙箱内核可跑读路径，但不等于 OpenWrt 内核）。
+
+## 5. 10 条交付判据（逐条如实回答）
+
+| # | 判据 | 现在的回答 |
+|---|---|---|
+| 1 | 能在 OpenWrt 25.12+ 安装 | **不能** —— 无 Makefile/apk 产物（M9 未开始） |
+| 2 | 能构建 | **Rust 侧能**：`cargo build --offline` 通过；**OpenWrt 侧不能**：无 SDK |
+| 3 | 能测试 | 能：276 单测 + Lua 红线脚本；集成测试未写 |
+| 4 | 零 Lua | 是，且有自动化证明（两个方向实测） |
+| 5 | 后端为模块化 Rust 常驻服务 | 模块结构是；**常驻服务未实现**（`main.rs` 占位） |
+| 6 | 前端 7 页可用 | **否**，一个都没写 |
+| 7 | 数据面真实生效 | **未验证**：机制存在、文本正确、有单测；沙箱无 `nft`/无内核模块，从未在设备上跑过 |
+| 8 | 安全清单落实 | 部分：注入/配置只读/残留/探测负载有实现与单测；**ACL、事务锁、轮询泄漏未实现**（`docs/SECURITY.md` §15） |
+| 9 | 不把模拟数据当实时状态 | 机制上成立（后端对「未测量」「全灭」「降级」都产出显式 note 且不承载流量）；前端未实现，因此该判据要等 M8 复验 |
+| 10 | 列出未完成特性 | 是：`README.md`、`CHANGELOG.md`「已知缺失」、`docs/REQUIREMENTS.md` 状态列、`docs/PROGRESS.md` §4 |
+
+## 6. 本环境的真实限制（2026-10-26 复核）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| `rustc` / `cargo` | 可用 | 本次由 1.98.1 更新到 **1.99.1**（`rustup toolchain install stable --component clippy --component rustfmt`），此前 1.98.1 对应的镜像组件包 404 |
+| `cargo clippy` | **现已可用** | 首次运行产出 20 条 lib 警告（均为风格类），已在后续提交清零 |
+| `cargo fmt` | **现已可用** | rustfmt 1.10.0-stable；`cargo fmt --all` 与清零 clippy 落在同一提交 `a0b32a0`（改动行高度重叠，拆开只会制造假冲突） |
+| `nft` 二进制 / netfilter 内核模块 | **不可用** | `/usr/sbin/nft`、`/sbin/nft` 均不存在；nftables 语法与下发只能到「文本 + 单测」 |
+| 真实路由下发 | **未执行** | 沙箱内 netlink 读路径可用（`ip -o rule list` 正常返回），但**不在此创建/删除路由或规则**：容器网络一改动就可能把环境搞坏，且与目标设备无关 |
+| OpenWrt SDK / 交叉工具链 | 不可用 | 无法产出 apk，也无法验证 `rust-package.mk` 细节 |
+| `raw.githubusercontent.com` | TLS 中断 | 上游源码引用改走镜像站与本地已核对文件 |
+
+结论：**任何「设备可用」的说法在本阶段都是未经证实的**。文档与 UI 文案必须保持这一口径。

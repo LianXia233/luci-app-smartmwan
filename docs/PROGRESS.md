@@ -13,20 +13,23 @@
 ## 2. 可复核指标
 
 ```sh
-cargo test --offline --lib          # 期望：test result: ok. 276 passed; 0 failed
-cargo build --offline             # 期望：warning-free 构建（main 目前是空壳，不参与功能）
-./scripts/no-lua-check.sh           # 期望：exit 0，且输出「未发现 Lua」类结论
+cargo test --offline --lib                          # 期望：276 passed; 0 failed
+cargo clippy --offline --all-targets -- -D warnings # 期望：0 警告
+cargo fmt --all -- --check                          # 期望：无差异
+cargo build --offline                               # 期望：0 警告
+./scripts/no-lua-check.sh                           # 期望：退出码 0
 ```
 
-本环境实测结果（2026-10-26）：
+本环境实测结果（2026-10-26 复核）：
 
 | 命令 | 结果 |
 |---|---|
 | `cargo test --offline --lib` | `276 passed; 0 failed; 0 ignored` 用时 ~0.29s |
 | `./scripts/no-lua-check.sh` | 退出码 0；注入 `src/accidentally_controller.lua` 或 `require("luci.dispatcher")` 后退出码 1（已实测两个方向） |
-| `cargo clippy` | **不可用**：本沙箱未安装 clippy 组件 |
-| `cargo fmt` | **不可用**：`rustup component add rustfmt` 从镜像取包 404 |
-| `nft -c -f <脚本>` | **不可用**：沙箱没有 `nft` 二进制，也没有 root |
+| `cargo clippy --offline --all-targets -- -D warnings` | **通过，0 警告**。工具链本次从 1.98.1 升到 1.99.1 后 clippy 组件才可用；首轮暴露 20 条，已按语义逐条处理（见提交 `a0b32a0`） |
+| `cargo fmt --all -- --check` | **通过，无差异**（同一提交建立了 rustfmt 基线） |
+| `cargo build --offline` | 0 警告 |
+| `nft -c -f <脚本>` | **不可用**：沙箱没有 `nft` 二进制（uid 0 也没有），且无 netfilter 内核支持 |
 
 ## 3. 模块完成度
 
@@ -112,7 +115,7 @@ Makefile        不存在（打包未开始）
 
 | 项 | 影响 | 现状 |
 |---|---|---|
-| 沙箱无 `nft` / 无 root | 无法验证 nftables 语法与 `ip rule` 下发 | 已把语法风险集中到 `firewall::probe_scripts()` 的能力探测，设备上不通过即降级为警告 |
-| 无 clippy / rustfmt | 无法交付 Lint 与风格结论 | 在 `docs/TESTING.md` 里明确标注为「未执行」，不假装通过 |
+| 沙箱无 `nft` / 无 netfilter 内核支持 | 无法验证 nftables 语法与 `ip rule` 下发 | 已把语法风险集中到 `firewall::probe_scripts()` 的能力探测，设备上不通过即降级为警告 |
+| ~~无 clippy / rustfmt~~ | ~~无法交付 Lint 与风格结论~~ | **本次已解除**：工具链升到 1.99.1 后组件可用，clippy 0 警告 + rustfmt 基线已建立（`a0b32a0`） |
 | 无真机 | 5G 重拨、IPv6 绕过、断电重启幂等 等只能在 M10 验证 | 相关逻辑已有代码级防护，但结论必须留白 |
 | 游戏预置库需要权威来源 | 违反「不得编造服务器 IP/端口」的风险 | 决定：不内置任何无来源数据，只提供可编辑数据文件与加载器 |

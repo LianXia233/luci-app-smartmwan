@@ -103,11 +103,15 @@ UCI 文件 `/etc/config/smartmwan`，段类型 `smartmwan`(global) / `wan` / `ga
 
 | 限制 | 后果 |
 |---|---|
-| 无 `nft` 二进制、非 root | 所有 nft/`ip rule` 行为只到「文本正确 + 单测」，不能声称设备可用 |
-| 无 `cargo-clippy` | 不交付 Lint 结论 |
-| 无 `rustfmt`（rustup 镜像 404） | 不交付格式检查；风格靠人工与一致性 |
+| 无 `nft` 二进制、无 netfilter 内核支持 | 所有 nft/`ip rule` 行为只到「文本正确 + 单测」，不能声称设备可用 |
 | `raw.githubusercontent.com` TLS 中断 | 上游源码引用改用本地已核对文件/镜像站 |
-| `cargo --offline` 可用 | 构建/测试一律加 `--offline` |
+| 沙箱网络改动有风险 | 虽然是 uid 0 且 netlink 读路径可用（`ip -o rule list` 正常），但**不在沙箱里增删路由/规则**：容器网络一坏就把环境搞没，且与目标设备无关 |
+| `cargo --offline` | 构建/测试一律加 `--offline` |
+
+**已解除的限制（2026-10-26）**：clippy 与 rustfmt 之前不可用（1.98.1 的组件包在镜像 404），
+把 stable 升到 1.99.1 后即可。⇒ 现在必须保持
+`cargo clippy --offline --all-targets -- -D warnings` 与 `cargo fmt --all -- --check` 双零，
+新增代码不过这两关就不要提交。
 
 ## 6. Git 与协作约定
 

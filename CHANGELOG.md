@@ -30,10 +30,19 @@
   WeightedHash）、动态算法（LeastNewConnections / LeastTraffic）带单轮搬动预算与
   优势闸门、主备切换与四条件回切（预热 / 稳定时间 / 连续成功 / 最小间隔 + 二次确认）、
   游戏低延迟评分与滞回择优、强制切换与「目标暂不可用时保留指令」语义。
+* **工程闸门**：`cargo clippy --offline --all-targets -- -D warnings` 归零
+  （20 条 lib 告警逐条修，只保留 1 处带中文说明的 `#[allow]`，在测试夹具里）；
+  `cargo fmt --all` 建立基线，此后 `clippy` / `fmt --check` 与单测同为提交前置条件。
 * **文档集**：`README.md`、`docs/REQUIREMENTS.md`（任务书 15 节 → 可核查验收矩阵）、
   `docs/ROADMAP.md`（M0–M10 与各自 DoD）、`docs/PROGRESS.md`（模块完成度与实测数字）、
   `docs/HANDOVER.md`（「改了会出事」的不变式清单），以及禁 Lua 自动化检查
   `scripts/no-lua-check.sh`（已实测「干净→退出 0 / 注入→退出 1」两个方向）。
+* **技术文档**：`docs/ARCHITECTURE.md`（分层与决策循环、fwmark 布局、nft 对象命名、
+  RPC 方法表）、`docs/CONFIGURATION.md`（UCI 键名/默认值全表与校验规则）、
+  `docs/SECURITY.md`（任务书安全清单逐条对应到代码位置）、
+  `docs/TESTING.md`（测试矩阵与 10 条交付标准的诚实回答）、
+  `research/luci.md` 与 `research/buildsystem.md`（去 Lua 前端与 apk/rust 打包研究笔记，
+  含「必须在真实 SDK 里复验」的来源声明）。
 
 ### 变更
 
@@ -64,9 +73,11 @@
 * LuCI 前端 7 个页面、CSS、rpcd ucode 桥、ACL JSON、menu.d JSON——未创建。
 * OpenWrt 包 Makefile、procd 脚本、UCI 默认配置、`/etc/nftables.d` 片段、
   apk 维护脚本——未创建。
-* 真机验证：**未做**。本沙箱没有 `nft` 二进制、没有 root、没有路由器。
-* `cargo clippy` 与 `cargo fmt`：**本环境不可用**（工具链未安装该组件），
-  因此没有静态风格/Lint 结论可以交付。
+* 真机验证：**未做**。沙箱是 root 容器，但没有 `nft` 二进制、没有 netfilter 支持、
+  没有路由器；`ip rule` / `ip route` 只读可用，因此 netlink 解码有单测背书，
+  下发路径、fw4 语法、LuCI 页面与 apk 安装全部未经真实设备验证。
+* 沙箱可交付的静态结论已齐：`clippy -D warnings` 0 告警、`fmt --check` 无差异、
+  `build` 0 告警、276 单测通过、禁 Lua 检查通过 —— 这五项每次提交前重跑。
 
 ## [0.3.0] — 2026-10-26（内部里程碑）
 

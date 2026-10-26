@@ -64,7 +64,7 @@
 | 4.2 | 自定义 CIDR / 协议 / 端口 / 范围 | `schema::GameRule`、`parse_port_range`（逆序/超范围拒绝） | 完成 |
 | 4.3 | 按 LAN 客户端 IP/MAC 匹配 | `client_ips`/`client_macs` + `validate::valid_mac` | 完成（数据层）；nft 侧 `ether_addr` 集合需真机 |
 | 4.4 | 域名规则 → 动态 nft 集合，并写清 DNS/CDN/DoH/IPv6/过期限制 | 计划 `src/rules/dns_sets.rs` | 未开始（`MAX_SET_ELEMENTS=2048`、`DYNAMIC_SET_SIZE=1024` 已预留） |
-| 4.5 | 规则优先级、启停、冲突检查 | `GameRule.priority`（同值按名称字典序，确定性）、`validate.rs` | 部分：排序与校验完成，跨规则冲突检测在 `rules` 层未开始 |
+| 4.5 | 规则优先级、启停、冲突检查 | `GameRule.priority`（同值按名称字典序，确定性）+ `validate::overlaps()`（目的网段/端口/客户端条件重叠且同优先级 → 明确 Error 并给出定序建议）、`pin_wan` 指向不存在线路 → Error | 部分：校验层 20 条单测已覆盖冲突检测；把规则编译成匹配器集合的 `rules` 层未开始 |
 | 4.6 | 分线路质量指标 | `health::metrics`（RTT/抖动/丢包/不稳定度/P95，窗口 90 样本，`MIN_SAMPLES=5` 置信门槛） | 完成 |
 | 4.7 | 可配置评分公式与归一化/夹取/滑窗/滞回/最小稳定时间 | `scheduler::latency::{ScoreWeights, ratio, clamp01}`，`min_advantage_permille`、`min_stable_ms` | 完成 |
 | 4.8 | 模式感知（主备时游戏是否例外） | `scheduler::ranking()` 在 `Follow` 时只允许活动线路 | 完成 |
@@ -113,7 +113,7 @@
 
 | # | 要求 | 状态 |
 |---|---|---|
-| 9.1 | 功能测试 + 工程测试 | 部分：276 个 lib 单测全绿；`tests/`（集成）未开始 |
+| 9.1 | 功能测试 + 工程测试 | 部分：276 个 lib 单测全绿；工程闸门已在沙箱实测通过 —— `cargo clippy --offline --all-targets -- -D warnings`（0）、`cargo fmt --all -- --check`（无差异）、`cargo build --offline`（0 警告）、`./scripts/no-lua-check.sh`（退出 0）；`tests/`（集成）未开始 |
 | 9.2 | 禁 Lua 自动化检查 | 完成 |
 | 9.3 | 10 条交付判据 | 进行中，逐条见 `docs/TESTING.md` §交付判据 |
 | 9.4 | 绝不把模拟数据当实时状态展示 | 设计上保证：未测量首轮会产出显式 note「尚未完成首轮探测…」，`Outcome` 无数据时 `carries_traffic()==false` |

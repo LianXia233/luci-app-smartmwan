@@ -1,0 +1,167 @@
+# 安全与稳定性清单
+
+任务书第 11 节列出 11 类风险，这里逐条给出：**威胁模型 → 现有机制 → 代码位置 → 状态**。
+状态为「需真机」的条目，表示机制已在代码里，但结论只能由设备验证得出；在没有设备前不得写成「已验证」。
+
+图例：`已实现（单测）` / `已实现（需真机）` / `部分` / `未开始`
+
+## 1. 命令注入
+
+* **威胁**：多 WAN 插件必然要执行 `nft`/`ip`，用户输入（段名、设备名、探测目标、路径）进入命令行即 RCE。
+* **机制**：
+  1. 唯一执行入口 `system::exec`，程序名必须在**绝对路径白名单** `ALLOWED_PROGRAMS` 内，不做 `$PATH` 查找；
+  2. 参数以数组传给 `execve`，**不经过 `sh -c`**，因此引号/分号/反引号/换行没有解释空间；
+  3. 环境清空后只保留最小 `PATH`，`stdin=/dev/null`；
+  4. 硬超时 + `kill_on_drop`，输出字节封顶（超限继续排空管道但丢弃内容，置 `truncated`）；
+  5. 非零退出码一律 `Error::Exec`，不静默忽略；
+  6. 上游还有一层：`config::validate` 对段名/接口名/域名/MAC/CIDR/路径做字符集与长度校验
+     （段名会成为 nft 集合名与注释的一部分）。
+* **位置**：`src/system/exec.rs`、`src/config/validate.rs`。
+* **状态**：已实现（单测：超时杀进程、白名单外程序被拒、输出截断、spawn 失败走 `Error::Exec` 而非 panic）。
+
+## 2. 损坏用户配置（UCI damage）
+
+* **威胁**：写坏 `/etc/config/network`/`firewall` 会让设备失联。
+* **机制**：
+  1. 只写 `/etc/config/smartmwan` 与 `/etc/nftables.d/smartmwan.nft`；对 `network`/`firewall` **只读**；
+  2. 原生文本解析 + 只操作自己的段类型（`smartmwan`/`wan`/`game`/`score`），未识别的用户键原样保留；
+  3. 写入前先 `render()` 到内存并跑校验；校验不通过不落盘；
+  4. 不使用 `uci set/commit`（避免其副作用与依赖），因此也不依赖任何 Lua。
+* **位置**：`src/config/mod.rs`（`Store::save`/`render`/`encode_into`）、`src/config/uci.rs`。
+* **状态**：已实现（单测覆盖 round-trip 与未知键保留）；真机上还需验证与 `uci show` 的互操作。
+
+## 3. ACL 过宽
+
+* **威胁**：LuCI 页面通常以 `wwwdata` 身份调 rpcd，权限给宽了等于把 root 能力暴露给未鉴权会话。
+* **机制（计划，M7/M8 落地）**：
+  1. `root/usr/share/rpcd/acl.d/luci-app-smartmwan.json` 按**方法粒度**授权，禁止 `ubus: *` 或整组通配；
+  2. 读方法与写方法分成两组 ACL，只读用户（`luci.app.nonroot`）只拿到读组；
+  3. ucode 桥再对守护进程 socket 做一次 `SO_PEERCRED` 校验：对端 uid 必须是 root 或 wwwdata，
+     写方法额外要求事务锁持有者身份；
+  4. 任何需要二次确认的操作（`apply`、`forceWan`）要求 `confirm` 字段，缺失即 `Error::Permission`。
+* **状态**：**未开始** —— 这是当前最主要的风险敞口：在 RPC/ACL 存在之前，本插件不具备任何可被滥用的接口，
+  但也因此不能声称「ACL 已严格」。
+
+## 4. 并发事务
+
+* **威胁**：两个 `apply` 交错会留下半套规则；用户在 LuCI 连点两次比想象的更常见。
+* **机制**：
+  1. `scheduler` 是唯一状态所有者（RPC 只能调它的方法，不得复制状态）；
+  2. 计划中的全局事务互斥锁串行化 `apply`/`rollback`/`reload`/`forceWan`；
+  3. `route::Applier::apply()` 返回 `Vec<Undo>`，回滚按逆序执行，且把无法撤销的项写进 `leftovers`
+     明确报告，而不是假装成功。
+* **状态**：部分 —— 单写者设计与 `Undo` 机制已实现并有单测；锁在 `transaction`/`rpc` 层（M6/M7）。
+
+## 5. 重启后规则重复
+
+* **威胁**：崩溃/断电后重启若「先加自己的规则再看已有什么」，就会出现成对重复规则，表现为流量随机偏斜。
+* **机制**：
+  1. 启动时**先读现状**：`netlink` dump `ip rule`/路由表，用 `is_our_priority()` + `OUR_RTPROT` +
+     表号区间 + `NS` 前缀判定所有权；
+  2. 与 `plan()` 的目标做差量（`Diff`），只补不重复；`Diff::is_empty()` ⇒ 不产生任何写入；
+  3. nft 侧同理：整表以 `delete table inet smw` + 重新声明的方式**幂等重建**（单批原子），
+     不依赖「先清空再添加」的多条命令。
+* **位置**：`src/system/route.rs::{plan, reconcile, audit_conflicts}`、`src/system/firewall.rs`。
+* **状态**：已实现（单测）；需真机验证断电重启场景。
+
+## 6. 标记与路由不一致
+
+* **威胁**：`ip rule` 说「fwmark X 走表 N」，但表 N 里没有对应默认路由，表现为间歇性黑洞。
+* **机制**：
+  1. 表号由 `marks::table_of(slot)` 唯一决定，不允许任意配置表号；
+  2. `route::plan()` 只有在 `WanTarget::usable_v4()/usable_v6()` 为真时才同时产出规则**和**路由，
+     二者成对出现（不存在「装了规则没路由」）；
+  3. `build_mirror()` 复制 main 表相关路由进专属表，保证策略表与原表可达性等价；
+  4. `Applier::verify()` 下发后回读并与 `Desired` 比对，不一致返回 `Issue` 列表交回滚判断；
+  5. 关闭 IPv6 时刻意「不装 v6 标记规则」，而不是「装规则但表里没有 v6 路由」—— 让 v6 自然走 main 表。
+* **状态**：已实现（单测）；需真机。
+
+## 7. 残留规则（leftovers）
+
+* **威胁**：卸载或停用后仍留有规则，用户以为插件没生效却实际在改路由。
+* **机制**：
+  1. 一切对象带 `NS="smw"` 前缀，`teardown_program()` 只生成 `delete table inet smw`（**绝不 flush 别人的表**）；
+  2. `/etc/nftables.d/smartmwan.nft` 是可删除的静态占位，删除该文件 + 移除 `firewall` 的 include 段
+     即可完全回到插件安装前的状态；
+  3. `route` 侧按优先级带 + `OUR_RTPROT` 精确删除自己安装的规则；
+  4. 回滚时无法撤销的项写入 `leftovers` 并记 error 级日志，供 UI 显示「需要人工处理」。
+* **状态**：已实现（单测 `teardown_only_deletes_own_table`、`include_file_is_inert`）；需真机验证卸载。
+
+## 8. 5G/4G 模组重拨导致网关/地址变化
+
+* **威胁**：模组重拨后网关 IP 变了，但策略表里还留着旧网关 → 线路「健康」却不通。
+* **机制**：
+  1. 每轮决策前 `interface::resolve_all()` 重新解析（不缓存拓扑结论），
+     `diff_resolved()` 显式产出 `DeviceChange`；
+  2. 网关优先取 netifd/路由现状（`default_gateway()`），配置里的 `gateway` 只是覆盖项；
+  3. 源地址按当前地址集合选取（`pick_source()`），地址消失即标记线路不可用并触发重新下发；
+  4. 探测失败分类里 `Unreachable` 与 `Timeout` 区分开：网关变了通常是前者，能更快进入 FAILED。
+* **位置**：`src/system/interface.rs`、`src/health/probe.rs`。
+* **状态**：已实现（单测）；需真机（模组重拨是无法在沙箱复现的场景）。
+
+## 9. IPv6 绕过
+
+* **威胁**：只做 v4 策略路由时，内网客户端的 v6 流量走 main 表默认路由，导致「看起来分流了但实际没分」
+  以及 v6 泄漏到未预期的出口。
+* **机制**：
+  1. `enable_ipv6` 为真时，规则/路由/nft 对象按族**成对**生成（`netlink::Family` 双族）；
+  2. 为假时，明确不接管：v6 走 main 表，并且校验层会对「配了 v6 目标却关了 IPv6」给出警告；
+  3. nft 侧 `smw_protected_v6`/`bypass_v6` 集合与 v4 同构，保护段（如 `fe80::/10`）永不分流；
+  4. 探测侧 `probe_ipv6` 独立判定：v4 通不代表 v6 通。
+* **状态**：已实现（单测，含「IPv6 关闭时不建 v6 集合」）；需真机验证 RA/DPD 下发的 v6 默认路由时序。
+
+## 10. 探测自身造成负载
+
+* **威胁**：多线路 × 多目标 × 短周期会把设备 CPU、蜂窝模组信令、运营商侧限速都打爆，
+  还会因探测超时而误判线路故障（自 feedback 循环）。
+* **机制**：
+  1. `max_concurrent_probes` 全局信号量，批次超出额度时**排队**并在日志里如实写明；
+  2. 每请求硬超时，取消路径用 `JoinSet::abort_all()`（不会「等全部跑完」）；
+  3. 用 ping socket（`SOCK_DGRAM/IPPROTO_ICMP`）而非 raw socket，无需 `CAP_NET_RAW`；
+  4. 探测目标建议多运营商（校验层对 >5 个目标给警告，对 0 个目标提示退化风险）；
+  5. `Unsupported`/`LocalError` 不计入线路失败，避免本地资源耗尽被误判成链路故障。
+* **状态**：已实现（单测含并发额度、取消、错误分类）；真机上需要实测 CPU/信令开销。
+
+## 11. 前端轮询泄漏
+
+* **威胁**：LuCI 视图离开后 `poll` 未移除 → 后台持续打 RPC，最终 rpcd 连接堆积、页面变慢。
+* **机制（计划，M8 落地）**：`poll.add()` 与 `poll.remove()` 必须在同一视图对象的生命周期里成对调用；
+  只读接口设计为可被前端安全轮询（**无副作用**），并约定前端在 `error`/`timeout` 时退避而不是重试风暴。
+* **状态**：**未开始**。
+
+## 12. 管理平面失联
+
+* **威胁**：插件把路由器自身的管理流量（Web/SSH/DNS）一起分流到某条坏线路，用户被锁在外面。
+* **机制**：
+  1. `protected_src` 默认含 `169.254.0.0/16`、`fe80::/10`，为空时校验给**警告**并提示加入管理网段；
+  2. nft 侧只匹配 LAN zone 转发的流量（`TAG_NOT_LAN`），本机流量走独立的 `route hook output` 决策；
+  3. 本机流量若无法确认出口一致性，宁可不接管（能力探测失败时降级为警告，见 `include_file_text()`
+     不声明 output 链的原因）；
+  4. `require_confirm`（默认开）强制「可能失联」的变更在前端二次确认；
+  5. 首次安装默认 `enabled=0`；`--restore-last-good` 提供回到上次可用状态的路径；
+  6. 卸载路径明确：删 include 文件 + 删 nft 表 + 删自己的 `ip rule`，不残留任何影响管理的对象。
+* **状态**：已实现（逻辑与校验）；需真机验证失联场景。
+
+## 13. 日志与隐私
+
+* `logging::redact()` 按字段名脱敏（password/key/token/secret/psk 等），未知字段做长度封顶；
+  外部命令回显一律 `clamp_str()` 截断且保留 UTF-8 边界（单测 `clamp_keeps_utf8_boundary`）。
+* 单测 `secret_fields_are_redacted` 锁住该行为。
+* **状态**：已实现（单测）。
+
+## 14. 供应链与依赖面
+
+* 运行时依赖只有 tokio / libc / serde / serde_json / thiserror；`Cargo.lock` 入库以固定版本；
+* 不引入 libuci/netfilter/conntrack 的 FFI，减少设备侧 soname 冲突面；
+* 打包时依赖必须显式声明（apk），且**不声明** `luci-lua-runtime`。
+* **状态**：依赖已固定；打包声明未开始（M9）。
+
+## 15. 当前敞口的诚实总结
+
+| 条目 | 是否可以声称安全 |
+|---|---|
+| 命令注入、配置只读、标记/路由一致性、残留清理、探测负载、日志脱敏 | 可以，依据是代码 + 单测（不含真机结论） |
+| 断电重启幂等、5G 重拨、IPv6 实际转发路径、卸载彻底性 | **不可以**，只能说「机制存在」，需真机 |
+| ACL、并发事务锁、前端轮询 | **不可以**，尚未实现 |
+
+任何 UI 文案、README 或交付说明在 M7/M8/M9 完成前，都不得出现「权限受控」「事务安全」「无轮询泄漏」这类表述。
