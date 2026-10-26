@@ -101,7 +101,7 @@
 
   集合名来自**规则段名**的 slug，不来自预置项 id。规则文本里每条匹配项都必须带字段名
   （`ether saddr @…` / `ip saddr @…` / `ip daddr @…`）：裸 `@set` 与后续条件混排语义不明，
-  而且历史上正是「以 `@` 开头的匹配项被过滤掉」导致 MAC 条件静默失效（`fdb82f5`）。
+  而且历史上正是「以 `@` 开头的匹配项被过滤掉」导致 MAC 条件静默失效（`051829f`）。
 * 安装期静态占位：`/etc/nftables.d/smartmwan.nft`，内容由 `firewall::include_file_text()` 生成
   （打包时必须用该函数产出，不许手写第二份）。它只声明表与一条空 prerouting 链。
 * 预置项数据目录：`/usr/share/smartmwan/presets/*.json`，路径常量在

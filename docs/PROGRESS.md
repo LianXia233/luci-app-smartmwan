@@ -28,7 +28,7 @@ find src -name '*.rs' -print0 | xargs -0 cat | wc -l # 行数口径，见 §3 �
 |---|---|
 | `cargo test --offline --lib` | `329 passed; 0 failed; 0 ignored` 用时 ~0.30s |
 | `./scripts/no-lua-check.sh` | 退出码 0；注入 `src/accidentally_controller.lua` 或 `require("luci.dispatcher")` 后退出码 1（已实测两个方向） |
-| `cargo clippy --offline --all-targets -- -D warnings` | **通过，0 警告**。工具链从 1.98.1 升到 1.99.1 后 clippy 组件才可用；首轮暴露 20 条，已按语义逐条处理（见提交 `a0b32a0`） |
+| `cargo clippy --offline --all-targets -- -D warnings` | **通过，0 警告**。工具链从 1.98.1 升到 1.99.1 后 clippy 组件才可用；首轮暴露 20 条，已按语义逐条处理（见提交 `32b97ad`） |
 | `cargo fmt --all -- --check` | **通过，无差异**（同一提交建立了 rustfmt 基线） |
 | `cargo build --offline` | 0 警告 |
 | `nft -c -f <脚本>` | **不可用**：沙箱没有 `nft` 二进制（uid 0 也没有），且无 netfilter 内核支持 |
@@ -96,25 +96,32 @@ Makefile        不存在（打包未开始）
 
 | 提交 | 阶段 | 内容 |
 |---|---|---|
-| `df08b54` | build | crate 清单、`Cargo.lock`、`LICENSE`（GPLv2 全文）、`.gitignore` |
-| `2054e70` | feat | 后端核心四层（配置 / 系统 / 健康 / 调度），259 测试 |
-| `11e6564` | test | 桶分配算法 17 条不变式单测，276 测试 |
-| `2576086` | docs | 验收矩阵、路线图、进度、交接 |
-| `a0b32a0` | chore | clippy 归零 + rustfmt 基线 |
-| `985bf07` | docs | 架构/配置/安全/测试文档 + 两份上游研究笔记 |
-| `fdb82f5` | fix(firewall) | MAC 条件必须真的出现在规则文本里（此前被 `@` 前缀过滤整条丢弃） |
-| `71d1680` | fix(firewall) | 域名条件不再被固定网段挤掉，也不再把匹配面放宽成兜底规则（+1 测试） |
-| `3722efe` | feat(rules) | 规则层四模块：matchers / presets / dns_sets / compile（+50 测试 → 327） |
-| `2fa07eb` | test(rules) | 补同文件重复 id 的单测 + 更正预置项 id 注释（+1 测试 → 328） |
-| `9f55b26` | fix(firewall) | 客户端条件全部失效时整条规则不下发，不再放宽到全 LAN（+1 测试 → 329） |
-| （本提交） | docs | M5 落地后的文档同步 |
+| `f90e088` | build | crate 清单、`Cargo.lock`、`LICENSE`（GPLv2 全文）、`.gitignore` |
+| `4bef8ae` | feat | 后端核心四层（配置 / 系统 / 健康 / 调度），259 测试 |
+| `fa1c5a0` | test | 桶分配算法 17 条不变式单测，276 测试 |
+| `c71ac12` | docs | 验收矩阵、路线图、进度、交接 |
+| `32b97ad` | chore | clippy 归零 + rustfmt 基线 |
+| `f803ad8` | docs | 架构/配置/安全/测试文档 + 两份上游研究笔记 |
+| `051829f` | fix(firewall) | MAC 条件必须真的出现在规则文本里（此前被 `@` 前缀过滤整条丢弃） |
+| `e1f31f2` | fix(firewall) | 域名条件不再被固定网段挤掉，也不再把匹配面放宽成兜底规则（+1 测试） |
+| `c78d247` | feat(rules) | 规则层四模块：matchers / presets / dns_sets / compile（+50 测试 → 327） |
+| `e766b4f` | test(rules) | 补同文件重复 id 的单测 + 更正预置项 id 注释（+1 测试 → 328） |
+| `c2e8067` | fix(firewall) | 客户端条件全部失效时整条规则不下发，不再放宽到全 LAN（+1 测试 → 329） |
+| `2e8b3d1` | docs | M5 落地后的文档同步（数字全部重测） |
+| （本提交） | docs | 作者身份统一后的历史重写留痕 + 全部哈希引用更正 |
 
-> **更正 `3722efe` 的提交说明**：其中「新增 51 条（rules 30 + dns_sets 21）」分布写错了。
-> 实测为：`3722efe` 新增 **50** 条，全部在 `rules`（`dns_sets` 15 / `matchers` 12 /
-> `presets` 9 / `mod` 14）；第 **51** 条来自 `71d1680`（`system::firewall`，24 条里新增的那条）。
+> **关于本表的哈希**：2026-10-26 按仓库所有者的明确指示，用 `git filter-branch` 把全部提交的
+> author/committer 统一为 `LianXia233`（见 `docs/HANDOVER.md` §6），并 `--force-with-lease` 强推。
+> **提交内容逐字节未变**（`git diff` 空），但**所有哈希都变了**，本表与全仓文档里的哈希引用已随之更正。
+> 这是唯一一次重写，此后不得再改写；旧克隆需 `git fetch && git reset --hard origin/main`。
+
+> **更正 `c78d247` 的提交说明**：其中「新增 51 条（rules 30 + dns_sets 21）」分布写错了。
+> 实测为：`c78d247` 新增 **50** 条，全部在 `rules`（`dns_sets` 15 / `matchers` 12 /
+> `presets` 9 / `mod` 14）；第 **51** 条来自 `e1f31f2`（`system::firewall`，24 条里新增的那条）。
 > 也就是说「51」这个总数跨了两个提交，分布也不是它写的那样。当前 `rules` 已有 51 条
-> （`2fa07eb` 又补了 1 条同文件重复 id 的分支），总数 329。
-> 按「不改写已提交历史」的约定，此处留痕而不 amend。
+> （`e766b4f` 又补了 1 条同文件重复 id 的分支），总数 329。
+> 按「不改写已提交历史」的约定，此处留痕而不 amend。后来的身份统一重写**只换了作者字段**，
+> 没有动这条提交说明，所以本更正依然有效。
 
 ## 6. 本轮修过的真实缺陷（不是「顺手优化」）
 
@@ -132,17 +139,17 @@ Makefile        不存在（打包未开始）
    `free_permits()`，批次超额度时在日志里如实写「超出的部分排队执行」。
 6. `scheduler::slot_map()` 曾经吞掉 `assign_slots()` 的错误并回退为空表 —— 那会把「配置有错」
    伪装成「没有线路」。改为返回 `Result` 并向上传播，配了 24 条以上线路时明确报错。
-7. **MAC 条件整条丢失**（`fdb82f5`，数据面缺陷）。`firewall.rs` 拼接规则匹配项时有一句
+7. **MAC 条件整条丢失**（`051829f`，数据面缺陷）。`firewall.rs` 拼接规则匹配项时有一句
    `.filter(|m| !m.starts_with('@'))`，而裸集合引用正好以 `@` 开头 —— 每条 MAC 匹配项都被丢掉，
    「只针对这台主机」的规则静默放大成命中该范围内全部新建连接。现在集合引用必须带字段名
    （`ether saddr @set`）且拼接处不再过滤，并补了 `ether saddr` / `ip saddr` / `ip daddr`
    三条**存在性**断言。旧测试只断言集合被**声明**过，所以一直没红 —— 这是「测试看着厚、
    其实没测到关键路径」的典型，写规则层时按「条件必须出现在最终文本里」补测。
-8. **目的条件互相挤掉 + 不支持时退化成兜底规则**（`71d1680`，数据面缺陷）。同一 v4 规则里
+8. **目的条件互相挤掉 + 不支持时退化成兜底规则**（`e1f31f2`，数据面缺陷）。同一 v4 规则里
    `target` 与 `domain` 只取第一类非空，域名条件不生效；更糟的是域名集合因能力不足被跳过时，
    规则落到「无目的条件」分支，变成命中该主机全部新建连接的兜底规则。现在同族每个目的条件各一条规则，
    只有本来就没有任何目的条件时才下无目的规则；顺带删掉循环外多推的一条重复所有权标签。
-9. **客户端条件全部失效时规则被放宽到全 LAN**（`9f55b26`，同类第三处）。规则用 `client_mac`
+9. **客户端条件全部失效时规则被放宽到全 LAN**（`c2e8067`，同类第三处）。规则用 `client_mac`
    限定主机，但设备 nft 不支持 `ether_addr` 集合（`caps.ether_sets == false`）时，代码只丢匹配项
    并写一条警告 —— 少一个条件不是「不生效」而是「匹配面变大」：降级后命中**全 LAN** 的新连接并打上
    游戏标记。更要命的是警告文案当时写「已降级为不匹配」，与真实行为相反，看日志会被误导。
@@ -169,7 +176,7 @@ Makefile        不存在（打包未开始）
 | 项 | 影响 | 现状 |
 |---|---|---|
 | 沙箱无 `nft` / 无 netfilter 内核支持 | 无法验证 nftables 语法与 `ip rule` 下发 | 已把语法风险集中到 `firewall::probe_scripts()` 的能力探测，设备上不通过即降级为警告 |
-| ~~无 clippy / rustfmt~~ | ~~无法交付 Lint 与风格结论~~ | **本次已解除**：工具链升到 1.99.1 后组件可用，clippy 0 警告 + rustfmt 基线已建立（`a0b32a0`） |
+| ~~无 clippy / rustfmt~~ | ~~无法交付 Lint 与风格结论~~ | **本次已解除**：工具链升到 1.99.1 后组件可用，clippy 0 警告 + rustfmt 基线已建立（`32b97ad`） |
 | 无真机 | 5G 重拨、IPv6 绕过、断电重启幂等 等只能在 M10 验证 | 相关逻辑已有代码级防护，但结论必须留白 |
 | 游戏预置库需要权威来源 | 违反「不得编造服务器 IP/端口」的风险 | 加载器与校验已就位（`rules::presets`），但**不内置任何数据**；`source` 字段缺失即整条拒绝，单测 `no_preset_is_bundled_in_code` + `missing_source_is_error` 钉住 |
 | `getaddrinfo` 不返回 TTL | 域名集合的元素寿命只能取一个下界，偏长会留残值、偏短会加重解析 | 用 `global.dns_ttl_floor_s`（默认 300s，校验 30..86400）作为折中并在 schema 注释、`dns_sets.rs` 模块头、`docs/CONFIGURATION.md` 三处如实写明「这是不完备而非最优」；真 TTL 需换解析器（会引入依赖面），暂未做 |

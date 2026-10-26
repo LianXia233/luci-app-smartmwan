@@ -169,7 +169,7 @@
 | 半个文件生效（静默降级） | 一个文件解析失败 → **整批失败**，不跳过；错误信息带文件名 | `load_dir`，单测同上一条的最后一段 |
 | id / 集合名注入 nft 语法 | id 只允许字母数字与 `_ . -`（≤40）；规则名经 `matchers::slug_of` 归一为 `[a-z0-9_]`（≤24）后进对象名；CIDR/端口/MAC/域名在加载时就校验 | `presets::validate`、`matchers::*` |
 | 数据文件写「全网段」变相全放行 | `targets` 与 `domains` 全空 → 拒绝；`0.0.0.0/0`、`::/0` 在 `matchers::normalize_prefix` 里拒绝 | `presets::validate`、`matchers::split_normalize` |
-| 设备 nft 不支持 `ether_addr` 集合 | 丢掉 MAC 条件继续下发 = 把「一台主机」放宽成「全 LAN」 | 客户端条件全部失效时**整条不下发**；单测 `mac_only_rule_is_not_emitted_when_ether_sets_unsupported`（`9f55b26`） |
+| 设备 nft 不支持 `ether_addr` 集合 | 丢掉 MAC 条件继续下发 = 把「一台主机」放宽成「全 LAN」 | 客户端条件全部失效时**整条不下发**；单测 `mac_only_rule_is_not_emitted_when_ether_sets_unsupported`（`c2e8067`） |
 | 元素数量把集合撑爆 | 超 `MAX_SET_ELEMENTS` / 每规则 32 域名 / 每域名 32 地址 → **报错不截断** | `presets::validate`、`rules::compile` |
 
 **仍然敞口的部分（不声称已解决）**：

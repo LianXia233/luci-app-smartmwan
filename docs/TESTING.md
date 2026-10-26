@@ -78,7 +78,7 @@ smartmwand --restore-last-good       # 回到上一次成功状态
 |---|---|---|
 | `rustc` / `cargo` | 可用 | 本次由 1.98.1 更新到 **1.99.1**（`rustup toolchain install stable --component clippy --component rustfmt`），此前 1.98.1 对应的镜像组件包 404 |
 | `cargo clippy` | **现已可用** | 首次运行产出 20 条 lib 警告（均为风格类），已在后续提交清零 |
-| `cargo fmt` | **现已可用** | rustfmt 1.10.0-stable；`cargo fmt --all` 与清零 clippy 落在同一提交 `a0b32a0`（改动行高度重叠，拆开只会制造假冲突） |
+| `cargo fmt` | **现已可用** | rustfmt 1.10.0-stable；`cargo fmt --all` 与清零 clippy 落在同一提交 `32b97ad`（改动行高度重叠，拆开只会制造假冲突） |
 | `nft` 二进制 / netfilter 内核模块 | **不可用** | `/usr/sbin/nft`、`/sbin/nft` 均不存在；nftables 语法与下发只能到「文本 + 单测」 |
 | 真实路由下发 | **未执行** | 沙箱内 netlink 读路径可用（`ip -o rule list` 正常返回），但**不在此创建/删除路由或规则**：容器网络一改动就可能把环境搞坏，且与目标设备无关 |
 | OpenWrt SDK / 交叉工具链 | 不可用 | 无法产出 apk，也无法验证 `rust-package.mk` 细节 |

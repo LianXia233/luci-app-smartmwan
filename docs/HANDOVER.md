@@ -77,16 +77,16 @@ bit16..23 bucket、bit12..15 gen、bit8..11 class、bit0..7 slot。
   `system::firewall`（怎么写成 nft 脚本）。把「匹配范围」和「语法兼容性」塞进同一个函数，
   两类错误的表现会互相掩盖。产物只有 `Vec<firewall::GameSpec>`（契约在 `src/system/firewall.rs:146`）。
 * **条件必须出现在最终文本里**，测试要按存在性断言（`ether saddr @…`、`ip saddr @…_cli4`、
-  `ip daddr @…_dst4`），不能只断言集合被**声明**过 —— 这正是 `fdb82f5`/`71d1680` 两个缺陷
+  `ip daddr @…_dst4`），不能只断言集合被**声明**过 —— 这正是 `051829f`/`e1f31f2` 两个缺陷
   当时躲过全部测试的原因。集合引用一律带字段名，拼接处**不做任何过滤**。
 * **能力不足 ⇒ 不下发该条件**，绝不退化成「无目的条件的兜底规则」。后者会命中该主机全部新建连接，
   比条件不生效严重一个量级。同理：元素数量超上限（客户端 512 / 全局集合 2048 / 每规则 32 域名 /
   每域名 32 地址）一律 **Error 不截断**；坏值**报错不跳过**（跳过等于「拦 10 段」变「拦 9 段」）。
 * **降级路径的通用判据：匹配面不得变宽**。三类同类缺陷都修在 `firewall::build()`：
-  MAC 匹配项被 `@` 前缀过滤丢弃（`fdb82f5`）、域名条件不支持时落到无目的兜底（`71d1680`）、
+  MAC 匹配项被 `@` 前缀过滤丢弃（`051829f`）、域名条件不支持时落到无目的兜底（`e1f31f2`）、
   `caps.ether_sets == false` 时只丢客户端条件继续下发规则 —— 最后一条最阴，因为规则**还有**
   目的条件看起来仍然精确，实际从「一台主机」变成「全 LAN」，而且旧警告文案写着「降级为不匹配」
-  （`9f55b26`）。现在规则想限定主机（写了 `client_mac` 或客户端 IP）却一个可用匹配项都不剩时，
+  （`c2e8067`）。现在规则想限定主机（写了 `client_mac` 或客户端 IP）却一个可用匹配项都不剩时，
   **整条 `continue` 不下发**。新增任何条件降级分支时，照这条判据自查，并按
   「条件还在文本里 / 规则整条不存在」写断言。
 * **不猜线路**。`selection=best` 而本轮没有择优结论时进 `Compiled::pending`，UI 显示「等待质量判定」；
@@ -145,14 +145,27 @@ UCI 文件 `/etc/config/smartmwan`，段类型 `smartmwan`(global) / `wan` / `ga
 
 ## 6. Git 与协作约定
 
-* 远端：`https://github.com/LianXia233/luci-app-smartmwan`，分支 `main`；
-* **远端 URL 里不留 token**（token 只在该次命令里内联使用）；仓库远端目前是空的，首个 push 需要
-  `git push -u origin main`；
-* 提交身份用**每条命令的** `-c user.name=... -c user.email=...`，**绝不执行 `git config`**；
-  *例外留痕*：本轮为了让后续 `git push` 不用每次写全 refspec，执行过
-  `git config branch.main.remote origin` 与 `git config branch.main.merge refs/heads/main`，
-  这违反了本条约定。等效且合规的做法是首次 `git push -u origin main`。下次接手可以保留现状，
-  但**不要再新增** `git config` 改动；若要清理，`git config --unset branch.main.remote` 等即可。
+* 远端：`https://github.com/LianXia233/luci-app-smartmwan`，分支 `main`；远端**已有历史**，
+  普通 `git push` 即可（`branch.main.remote/merge` 已配好），不要再假设这是个空仓库；
+* **远端 URL 里不留 token**，token 只在该次命令里内联使用，绝不写进 `.git/config`、
+   remote URL、文档或提交信息；任何一次把 token 明文贴进对话后都应视为已泄露，
+  **建议仓库所有者轮换该 token**；
+* 提交身份统一为 **`LianXia233 <49828512+LianXia233@users.noreply.github.com>`**（作者与提交者相同），
+  用**每条命令的** `-c user.name=... -c user.email=...` 传入，**绝不执行 `git config`**。
+  带 `49828512+` 前缀的写法保证 GitHub 一定能把提交归属到该账号（不带前缀的
+  `LianXia233@users.noreply.github.com` 不保证）。
+  *历史已被重写一次（2026-10-26，按仓库所有者的明确指示）*：`f90e088..2e8b3d1` 的 13 个提交
+  原先混用两种身份（早期 `LianXia233` + 后续 `smartmwan-dev <dev@localhost>`），
+  已用 `git filter-branch` 统一身份并 `--force-with-lease` 强推。
+  **树内容与提交信息逐字节未变**（`git diff` 对比重写前分支为空），但 **hash 全变**：
+  任何人手里有旧 clone，必须 `git fetch && git reset --hard origin/main` 或重新 clone，
+  不要在旧历史上继续提交。**不要再做第二次历史重写。**
+  本地留有重写前的分支 `backup/pre-author-rewrite`（只是防呆备份，远端没有它）；
+  确认无误后可以 `git branch -D backup/pre-author-rewrite` 删掉，删之前它同时是
+  「内容未被改动」的证据（`git diff backup/pre-author-rewrite main` 应为空）。
+  *另一处遗留违规*：本轮为了让 push 省事执行过 `git config branch.main.remote/merge`，
+  与本条约定冲突，合规等效做法是首次 `git push -u origin main`；
+  若要清理 `git config --unset branch.main.remote` 即可，但**不要新增** `git config` 改动。
 * 提交规范：`build:` / `feat:` / `fix(scope):` / `test(scope):` / `docs:` / `chore:`，中文正文，
   一次提交只做一件事（原子提交）；
 * **每完成一个阶段同步更新**：`CHANGELOG.md`、`docs/REQUIREMENTS.md`（状态列）、`docs/ROADMAP.md`（勾选）、
@@ -185,6 +198,6 @@ UCI 文件 `/etc/config/smartmwan`，段类型 `smartmwan`(global) / `wan` / `ga
 * **不要内置任何游戏服务器 IP/端口**，也不要加载没有 `source` 的预置项数据文件；
 * **不要在规则条件上「放宽」**：能力不支持就不下发该条件，不要退回无目的/无客户端的兜底规则；
   元素超上限不要截断，要报错；
-* 不要在匹配项拼接处加任何形式的 `filter`（`fdb82f5` 那个缺陷就是这么来的）；
+* 不要在匹配项拼接处加任何形式的 `filter`（`051829f` 那个缺陷就是这么来的）；
   集合引用必须带字段名；
 * 不要把 `git reset --hard` / `push --force` 用在已有历史上；文档与代码问题用新提交修正。
