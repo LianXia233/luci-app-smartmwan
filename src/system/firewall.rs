@@ -773,14 +773,17 @@ pub fn build(input: &Input) -> Result<Program> {
                     "规则 {slug} 的标记为 0，会退化为不分流"
                 )));
             }
-            // 目的匹配按族拆成两条规则，避免 inet 链里混用 ip/ip6 选择器。
+            // 目的匹配按族拆成规则，避免 inet 链里混用 ip/ip6 选择器。
+            //
+            // 一个目的条件（固定网段集合 / DNS 动态集合）一条规则：nft 里
+            // `ip daddr @{a}, @{b}` 这种写法跨版本不稳定，拆成多条更可靠，
+            // 而且每条都能独立按 comment 定位（回滚与差量替换都靠它）。
             let mut fam_rules: Vec<(Option<String>, Option<Family>)> = Vec::new();
+            let mut v4_dsts: Vec<String> = Vec::new();
             if !v4_dst.is_empty() {
-                fam_rules.push((
-                    Some(format!("ip daddr @smw_g_{slug}_dst4")),
-                    Some(Family::V4),
-                ));
-            } else if let Some(dns) = &g.dns_set {
+                v4_dsts.push(format!("ip daddr @smw_g_{slug}_dst4"));
+            }
+            if let Some(dns) = &g.dns_set {
                 if caps.dyn_timeout_sets {
                     let name = safe_name("DNS 集合", dns, 40)?;
                     decl.push_str(&set_block(
@@ -796,16 +799,26 @@ pub fn build(input: &Input) -> Result<Program> {
                         &[],
                     ));
                     p.sets.push(name.clone());
-                    fam_rules.push((Some(format!("ip daddr @{name}")), Some(Family::V4)));
+                    v4_dsts.push(format!("ip daddr @{name}"));
                 } else {
                     issues.push(warn(
                         &format!("smartmwan.game[{slug}].domains"),
-                        "设备 nft 不支持 dynamic+timeout 集合，域名条件无法生效".into(),
+                        "设备 nft 不支持 dynamic+timeout 集合，该规则的域名条件无法生效".into(),
                         Some("改用固定网段，或升级 nft 到支持动态集合的版本".into()),
                     ));
                 }
+            }
+            if v4_dsts.is_empty() {
+                // 只有「本来就没有任何目的条件」时才下无目的规则。
+                // 若是因为域名条件不被支持而变空，宁可一条都不下：
+                // 兜底规则会命中该主机全部新建连接，那是比「不生效」严重得多的静默放宽。
+                if g.dns_set.is_none() {
+                    fam_rules.push((None, Some(Family::V4)));
+                }
             } else {
-                fam_rules.push((None, Some(Family::V4)));
+                for d in v4_dsts {
+                    fam_rules.push((Some(d), Some(Family::V4)));
+                }
             }
             if input.families.contains(&Family::V6) {
                 if !v6_dst.is_empty() {
@@ -849,10 +862,6 @@ pub fn build(input: &Input) -> Result<Program> {
                     chain: CHAIN_PREROUTING,
                 });
             }
-            p.tags.push(Tag {
-                comment: tag,
-                chain: CHAIN_PREROUTING,
-            });
         }
     }
 
@@ -1803,6 +1812,91 @@ mod tests {
             "{:?}",
             p2.issues
         );
+        // 关键安全断言：域名条件不支持时**一条规则都不下**。
+        // 旧写法是 `if v4_dst 非空 … else if dns_set … else 兜底`，
+        // 于是「v4_dst 空 + dns_set 有但不支持」会走到声明集合那支的 else（只报警），
+        // 而「v4_dst 空 + dns_set 无」才该走兜底；重构后若把这两种情况混在一起，
+        // 就会产出一条只带客户端条件、命中这批主机全部新建连接的宽规则。
+        assert!(
+            !p2.text.contains("smw:game:svc"),
+            "不支持域名条件时不能退化成兜底规则：\n{}",
+            p2.text
+        );
+        assert!(p2.tags.iter().all(|t| !t.comment.contains("smw:game:svc")));
+    }
+
+    #[test]
+    fn cidr_and_dns_conditions_each_get_a_rule() {
+        // 固定网段与域名是「或」关系：两类目的条件必须各出一条规则。
+        // 旧实现写成 if/else if 链，只要有固定网段就永远不会声明 DNS 集合，
+        // 域名条件被静默丢掉，且没有任何降级说明。
+        let lines = vec![line("wan", 1)];
+        let map = map_all(&[1], 4);
+        let lan = vec!["br-lan".to_string()];
+        let g = GameSpec {
+            name: "mixed".into(),
+            slug: "mixed".into(),
+            priority: 20,
+            mark: marks::mark(1, marks::CLASS_GAME, 0, 0),
+            v4: vec!["203.0.113.0/24".into()],
+            v6: vec![],
+            macs: vec![],
+            client_v4: vec![],
+            client_v6: vec![],
+            ports: vec![],
+            proto: ProtoFilter::Both,
+            dns_set: Some("smw_g_mixed_dns".into()),
+            dns_timeout_s: 300,
+        };
+        let caps_on = Capabilities {
+            dyn_timeout_sets: true,
+            ..Default::default()
+        };
+        let games = [g];
+        let mut inp = input(&lines, &map, &lan);
+        inp.games = &games;
+        inp.caps = &caps_on;
+        let p = build(&inp).unwrap();
+        assert!(p.text.contains("set smw_g_mixed_dst4"), "{}", p.text);
+        assert!(p.text.contains("flags dynamic,timeout"));
+        assert!(p.sets.iter().any(|s| s == "smw_g_mixed_dns"));
+        let rules: Vec<&str> = p
+            .text
+            .lines()
+            .filter(|l| l.contains("smw:game:mixed"))
+            .collect();
+        assert_eq!(rules.len(), 2, "两条目的条件应有两条规则：{rules:?}");
+        assert!(rules
+            .iter()
+            .any(|r| r.contains("ip daddr @smw_g_mixed_dst4")));
+        assert!(rules
+            .iter()
+            .any(|r| r.contains("ip daddr @smw_g_mixed_dns")));
+        // 两条都必须真的带标记，否则第二条只是计数不看出口。
+        for r in &rules {
+            assert!(r.contains("meta mark set"), "{r}");
+        }
+
+        // 能力不支持时：固定网段那条仍然下发，域名那条不生成兜底，并给出说明。
+        let caps_off = Capabilities {
+            dyn_timeout_sets: false,
+            ..Default::default()
+        };
+        let mut inp2 = input(&lines, &map, &lan);
+        inp2.games = &games;
+        inp2.caps = &caps_off;
+        let p2 = build(&inp2).unwrap();
+        let rules2: Vec<&str> = p2
+            .text
+            .lines()
+            .filter(|l| l.contains("smw:game:mixed"))
+            .collect();
+        assert_eq!(rules2.len(), 1, "只保留固定网段那条：{rules2:?}");
+        assert!(rules2[0].contains("ip daddr @smw_g_mixed_dst4"));
+        assert!(p2
+            .issues
+            .iter()
+            .any(|i| i.message.contains("域名条件无法生效")));
     }
 
     #[test]
