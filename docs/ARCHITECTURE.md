@@ -165,7 +165,7 @@ permission/unsupported/timeout/no_route/io/json`），前端据此区分「可�
 | 4 | `smartmwan.getLine` | 读 | 单线详情（含探测历史与状态迁移轨迹） |
 | 5 | `smartmwan.getBalance` | 读 | 算法、桶图、份额千分比、上次重排时间与搬动数 |
 | 6 | `smartmwan.getFailover` | 读 | 主备顺序、当前活动、等待回切的线路及**逐条原因** |
-| 7 | `smartmwan.getGames` | 读 | 规则列表 + 冲突项（**命中计数未实现**，nft 规则尚无 counter——见 `docs/PROGRESS.md` §9.3） |
+| 7 | `smartmwan.getGames` | 读 | 规则列表 + 冲突项 + 命中计数（`hits`，来自内核 `counter`；**读不到时为 `null`，不是 0**） |
 | 8 | `smartmwan.getGameQuality` | 读 | 每条规则在各候选线路上的评分分解 |
 | 9 | `smartmwan.getConnections` | 读 | conntrack 按槽位/类别统计（有上限，超限如实标注截断） |
 | 10 | `smartmwan.getTraffic` | 读 | 接口计数器与平滑后的吞吐 |

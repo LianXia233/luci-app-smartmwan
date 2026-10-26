@@ -214,9 +214,14 @@
   没有 diff 就不得有数据面写入）；`failback` 是**即时动作** —— 主线路此刻不够格就如实
   返回 `switched=false`，不留一条将来悄悄生效的指令，这是它与 `forceWan`
   （持久意志，目标暂不可用也保留指令）的分工；`setAlgorithm` 选到可能降级的算法时
-  在响应里带 `hint`。`diagnostics` 是只读聚合诊断（版本 / uptime / 校验结论 /
+  在响应里带 `hint`。  `diagnostics` 是只读聚合诊断（版本 / uptime / 校验结论 /
   能力降级 / 线路健康 / conntrack / DNS / 最近回执 / 近期告警），**零副作用**：
   不触发探测、不下发、不重载。
+* **游戏规则命中统计**：`firewall::build()` 生成的游戏规则本来就带 `counter`，
+  本次补的是「读回来」——`FirewallExec::rule_counters()`（**只有真实 nft 通道给数字**，
+  替身与「无 nft」一律 `None`）、`rules::GameHits`（只认 `smw:game:` 标签，
+  同一规则的多条 nft 规则求和）、主循环每 30 秒采样一次；`getGames` 按 slug 返回 `hits`。
+  口径：**读不到就是 `null` + 原因说明**，绝不用 0 冒充「规则没命中过」。
 
 ### 变更
 

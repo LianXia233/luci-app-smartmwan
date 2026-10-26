@@ -388,9 +388,17 @@ update_game_rules→save、force_failover→forceWan、get_events→getLogs。
 
 ### 9.3 后端功能缺口（SPEC §6/§9）
 
-* **游戏规则命中统计**：游戏规则 nft 体无 `counter`，RPC 不返回命中数
-  （SPEC §6.x 与 §10.1-5 要求）；
-* **diagnostics 聚合诊断**：无（见 9.1）。
+* ~~**游戏规则命中统计**~~（**已实现，2026-10-27**）：`firewall::build()` 生成的每条游戏
+  规则本来就带 `counter`，缺的是「读回来」的路径。本次补齐三段：
+  ① `FirewallExec::rule_counters()` —— **只有真实 nft 通道给出数字**，替身与「无 nft」
+  一律 `None`（编造的计数会被界面当成命中率，比没有数字更糟）；
+  ② `rules::GameHits::from_listing()` —— 只认 `smw:game:` 标签，一条 UCI 规则对应的
+  多条 nft 规则**求和**（桶规则/保护/绕行的计数不混入，否则数字会变成全链流量）；
+  ③ 主循环每 30 秒采样一次写进 `AppState.hits`（比探测低频：`nft -a list chain`
+  要把整条链拉回来），`getGames` 按规则 slug 返回 `hits`。
+  **诚实口径**：从未采样或读不到时 `hits` 是 `null` 且 `hits_note` 写明原因，
+  绝不用 0 冒充「没命中过」。
+* ~~**diagnostics 聚合诊断**~~（已实现，见 9.1）。
 
 ### 9.4 测试缺口（SPEC §14）
 

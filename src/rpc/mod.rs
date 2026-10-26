@@ -398,6 +398,9 @@ pub struct AppState {
     pub last_round: Arc<Mutex<Option<RoundInfo>>>,
     pub caps: Arc<RwLock<Capabilities>>,
     pub dns: Arc<Mutex<rules::dns_sets::Registry>>,
+    /// 最近一次游戏规则命中计数采样。**主循环低频写入，RPC 只读**；
+    /// 通道不是真 nft 时永远停在默认值（读不到就是读不到，不补 0）。
+    pub hits: Arc<RwLock<rules::GameHits>>,
     pub ctl: mpsc::UnboundedSender<Command>,
     pub paths: Paths,
     pub started: Instant,
@@ -995,8 +998,32 @@ async fn h_get_games(st: &AppState) -> Result<Value> {
         })
         .collect();
     let dns_stats = st.dns.lock().unwrap_or_else(|p| p.into_inner()).stats();
+    // 命中数：读到什么报什么。查不到就是 null —— 0 会被读成「规则没命中过」，
+    // 而真相可能是「通道不是真 nft，根本没读到」。
+    let hits = read_lock(&st.hits).clone();
+    let rules: Vec<Value> = rules
+        .into_iter()
+        .map(|mut r| {
+            let slug = rules::matchers::slug_of(r["name"].as_str().unwrap_or_default());
+            r.as_object_mut().unwrap().insert(
+                "hits".to_string(),
+                hits.of(&slug)
+                    .map(|(p, b)| json!({ "packets": p, "bytes": b }))
+                    .unwrap_or(Value::Null),
+            );
+            r
+        })
+        .collect();
     Ok(json!({
         "rules": rules,
+        "hits_at_ms": hits.at_ms,
+        "hits_note": if hits.at_ms == 0 {
+            "尚未采样到命中数（nft 通道不是真实执行器，或还没到采样周期）"
+        } else if hits.note.is_empty() {
+            "命中数来自内核 counter，按规则 slug 求和（同一规则可能对应多条 nft 规则）"
+        } else {
+            &hits.note
+        },
         "conflicts": conflicts,
         "presets_dir": rules::presets::PRESET_DIR,
         "domains_tracked": dns_stats.domains,
@@ -1886,6 +1913,7 @@ pub mod testable {
                 Duration::from_secs(300),
                 1024,
             ))),
+            hits: Arc::new(RwLock::new(rules::GameHits::default())),
             ctl: ctl_tx,
             paths: Paths {
                 config: dir.join("smartmwan"),
@@ -2478,6 +2506,41 @@ mod tests {
             rx.try_recv().is_err(),
             "只读聚合视图不得触发探测、下发或重载"
         );
+    }
+
+    #[tokio::test]
+    async fn get_games_reports_hits_as_null_until_they_are_really_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let (st, _rx) = testable::test_state(dir.path());
+        *write_lock(&st.cfg) = Arc::new(two_wan_cfg());
+
+        // 从未采样：必须是 null + 说明，绝不能是 0（0 会被读成「规则没命中过」）。
+        let env = call(&st, "smartmwan.getGames", json!({})).await;
+        assert!(env.ok, "{:?}", env.error);
+        let d = env.data.unwrap();
+        assert_eq!(d["hits_at_ms"], json!(0));
+        assert!(d["hits_note"].as_str().unwrap().contains("尚未采样"));
+
+        // 采样到之后：按 slug 报数字。
+        let mut per = std::collections::BTreeMap::new();
+        per.insert("svc".to_string(), (3u64, 300u64));
+        *write_lock(&st.hits) = rules::GameHits {
+            per_rule: per,
+            at_ms: 1234,
+            note: String::new(),
+        };
+        let mut cfg = two_wan_cfg();
+        cfg.games.push(crate::config::schema::GameRule {
+            name: "svc".into(),
+            enabled: true,
+            ..Default::default()
+        });
+        *write_lock(&st.cfg) = Arc::new(cfg);
+        let env = call(&st, "smartmwan.getGames", json!({})).await;
+        let d = env.data.unwrap();
+        assert_eq!(d["hits_at_ms"], json!(1234));
+        assert_eq!(d["rules"][0]["hits"]["packets"], json!(3));
+        assert_eq!(d["rules"][0]["hits"]["bytes"], json!(300));
     }
 
     #[tokio::test]

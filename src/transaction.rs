@@ -57,6 +57,7 @@ use std::time::Instant;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::config::{self, schema::Config, validate::Issue};
+use crate::logging;
 use crate::rules::{self, matchers, presets};
 use crate::scheduler;
 use crate::system::firewall::{self, Capabilities, GameSpec, Nft, Program, RuleInfo, Tag};
@@ -187,6 +188,29 @@ impl FirewallExec {
             FirewallExec::Real(n) => format!("nft:{}", n.program()),
             FirewallExec::Sim(_) => "sim(测试替身，不验证 nft 语法)".to_string(),
             FirewallExec::Absent => "absent(无 nft 可执行文件)".to_string(),
+        }
+    }
+
+    /// 读取某条链的规则与计数（`nft -a list chain`）。只读，不改内核。
+    ///
+    /// **只有真实 nft 通道能给出数字**：替身与「无 nft」一律 `None`。
+    /// 替身产出的计数是编造的，而界面会把一个像样的数字当成真实命中率 ——
+    /// 那比「读不到」糟得多（用户会据此判断规则有没有生效）。
+    pub async fn rule_counters(&self, chain: &str) -> Option<Vec<RuleInfo>> {
+        match self {
+            FirewallExec::Real(n) => match n.list_chain(chain).await {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    logging::warn_ctx(
+                        "firewall",
+                        "counters",
+                        &format!("读取链 {chain} 的规则计数失败：{e}"),
+                        &[("chain", chain.to_string())],
+                    );
+                    None
+                }
+            },
+            FirewallExec::Sim(_) | FirewallExec::Absent => None,
         }
     }
 
@@ -2273,5 +2297,26 @@ mod tests {
         }];
         let err = co.verify_firewall(&want).await;
         assert!(err.is_err(), "启用路径的 list 失败必须仍然报错");
+    }
+
+    #[tokio::test]
+    async fn rule_counters_only_exist_on_the_real_nft_channel() {
+        // 替身与「无 nft」都不得给出计数：它们给的数字是编造的，
+        // 而界面会把一个像样的数字当成真实命中率 —— 那比「读不到」糟糕得多。
+        let dir = tempfile::tempdir().unwrap();
+        assert!(FirewallExec::Sim(Sim::new())
+            .rule_counters(firewall::CHAIN_PREROUTING)
+            .await
+            .is_none());
+        assert!(FirewallExec::Absent
+            .rule_counters(firewall::CHAIN_PREROUTING)
+            .await
+            .is_none());
+        // 真实通道指向一个必然失败的程序：读不出来就是 None，不回空列表冒充「零命中」。
+        let nft = Arc::new(Nft::with_program("/bin/false", dir.path()));
+        assert!(FirewallExec::Real(nft)
+            .rule_counters(firewall::CHAIN_PREROUTING)
+            .await
+            .is_none());
     }
 }
