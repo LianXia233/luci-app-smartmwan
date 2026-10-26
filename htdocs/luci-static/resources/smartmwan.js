@@ -12,6 +12,9 @@
  * 诚实性约束（任务书）：任何「状态」必须来自 RPC 字段或后端 notes，
  * 本文件不提供任何「猜测良好」的辅助函数。
  */
+'require poll';
+/* 注意：L 与 E 由 LuCI 加载器注入为全局，无需声明；poll/rpc/uci 等模块必须显式
+ * require —— 真机实证：漏声明时运行到 `poll.add` 抛 "poll is not defined"。 */
 
 /* 样式表注入：<link> + L.resource，不用内联 <style>；幂等（按 id 判重）。 */
 if (document.getElementById('smw-css-link') == null) {
