@@ -40,7 +40,7 @@ use failover::{LineState, Machine};
 use latency::Scored;
 
 /// 一轮调度产出的完整决策，可直接序列化给 RPC、也可用于生成 nftables 桶映射。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Outcome {
     /// 本轮工作模式。
     pub mode: Mode,

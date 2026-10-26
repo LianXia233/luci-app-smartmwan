@@ -32,7 +32,6 @@ const NLM_F_ACK: u16 = 0x0004;
 const NLM_F_DUMP: u16 = 0x0100 | 0x0200;
 const NLM_F_CREATE: u16 = 0x0400;
 const NLM_F_EXCL: u16 = 0x0200;
-const SOL_NETLINK: i32 = 270;
 const NETLINK_ROUTE: i32 = 0;
 
 // ---- linux/rtnetlink.h ----
@@ -294,6 +293,10 @@ pub struct RouteSpec {
 }
 
 impl RouteSpec {
+    /// 经网关的默认路由。**scope 必须是 UNIVERSE（global）**：带网关的路由
+    /// 由 FIB 解析下一跳，iproute2 对 `via GW` 一律用 global scope。
+    /// 曾经写成 RT_SCOPE_LINK，内核直接 ENETUNREACH 拒绝安装 ——
+    /// 真机集成测试（WSL + 真 nft/netlink）抓出来的，替身不验证所以单测全绿。
     pub fn default_v4(table: u32, gw: IpAddr, oif: u32, prefsrc: Option<IpAddr>) -> RouteSpec {
         RouteSpec {
             family: Family::V4,
@@ -304,10 +307,7 @@ impl RouteSpec {
             oif: Some(oif),
             prefsrc,
             kind: RTN_UNICAST,
-            scope: match gw {
-                IpAddr::V4(_) => RT_SCOPE_LINK,
-                IpAddr::V6(_) => RT_SCOPE_LINK,
-            },
+            scope: RT_SCOPE_UNIVERSE,
             priority: 1024,
         }
     }
@@ -816,16 +816,18 @@ pub fn parse_stream(
         }
         match mtype {
             NLMSG_ERROR => {
-                // struct nlmsgerr: i32 error + 原始 16 字节请求头
+                // struct nlmsgerr: i32 error + 原始 16 字节请求头。
+                // **成功 ACK 也是 NLMSG_ERROR（error==0）**，因此无论成败都要
+                // 终结本次会话：只对 code!=0 置 done 会让每次成功写入都继续等
+                // 下一条消息，直到 SO_RCVTIMEO 超时（真机集成测试实测：
+                // 路由安装成功却报「netlink recv 超时」）。
                 let code = i32::from_le_bytes([body[0], body[1], body[2], body[3]]);
                 let desc = describe_errno(code);
                 out.push(Parsed::Ack {
                     error: code,
                     message: desc,
                 });
-                if code != 0 {
-                    done = true;
-                }
+                done = true;
             }
             NLMSG_DONE => done = true,
             NLMSG_NOOP => {}
@@ -908,6 +910,17 @@ pub fn flatten_routes(v: Vec<Parsed>) -> Vec<RouteEntry> {
         }
     }
     out
+}
+
+/// 按路由表号过滤 dump 结果。内核的 `RTM_GETROUTE` dump 不按请求的 `rtm_table`
+/// 过滤（实测请求 101 也返回 main/local 的路由），所以每一张表的 dump 都要在
+/// 客户端按响应消息自带的 `rtm_table` 收窄一次。
+///
+/// 不过滤的后果不是「多一点数据」：按 24 张表循环 dump 时，表 101 的路由会被
+/// 收进 24 份，`route::reconcile` 据此产生 24 条重复删除 —— 第一次成功、
+/// 其余 ESRCH，整个回收失败（真机集成测试实测，沙箱替身不经过这条路所以没暴露）。
+pub fn filter_routes_by_table(routes: Vec<RouteEntry>, table: u32) -> Vec<RouteEntry> {
+    routes.into_iter().filter(|r| r.table == table).collect()
 }
 
 /// errno 文本：只翻译我们确实会遇到的几个，其它给通用描述。
@@ -1137,30 +1150,43 @@ impl Connection {
         }
         let f = recv_timeout.to_std_timeout();
         // SAFETY: setsockopt 传 timeval 结构，fd 有效。
+        //
+        // 三个必须记住的坑（都踩过）：
+        // 1. `SO_RCVTIMEO`/`SO_SNDTIMEO`/`SO_RCVBUF` 都是 **SOL_SOCKET** 层的选项，
+        //    写到 SOL_NETLINK 会 ENOPROTOOPT 静默失败 —— 没有超时的 netlink recv
+        //    会在内核不回复时**永久挂住**整个 spawn_blocking 线程（真机集成测试
+        //    里主循环卡死、探测轮全停，就是这么来的）；
+        // 2. `tv_usec` 本来就是微秒，`subsec_micros()` 不能再乘 1000；
+        // 3. 返回值必须检查：超时设不上就等于把「挂住」当默认行为，必须致命。
         unsafe {
             let tv = libc::timeval {
                 tv_sec: f.as_secs() as libc::time_t,
-                tv_usec: (f.subsec_micros() as libc::suseconds_t) * 1000,
+                tv_usec: f.subsec_micros() as libc::suseconds_t,
             };
-            libc::setsockopt(
-                raw,
-                SOL_NETLINK,
-                libc::SO_RCVTIMEO,
-                &tv as *const libc::timeval as *const libc::c_void,
-                std::mem::size_of::<libc::timeval>() as libc::socklen_t,
-            );
-            libc::setsockopt(
-                raw,
-                SOL_NETLINK,
-                libc::SO_SNDTIMEO,
-                &tv as *const libc::timeval as *const libc::c_void,
-                std::mem::size_of::<libc::timeval>() as libc::socklen_t,
-            );
-            // 接收缓冲调大，降低 dump 期间 ENOBUFS 概率。
+            for (name, opt) in [
+                ("SO_RCVTIMEO", libc::SO_RCVTIMEO),
+                ("SO_SNDTIMEO", libc::SO_SNDTIMEO),
+            ] {
+                let r = libc::setsockopt(
+                    raw,
+                    libc::SOL_SOCKET,
+                    opt,
+                    &tv as *const libc::timeval as *const libc::c_void,
+                    std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+                );
+                if r != 0 {
+                    let e = std::io::Error::last_os_error();
+                    libc::close(raw);
+                    return Err(Error::Netlink(format!(
+                        "设置 netlink {name} 失败: {e}（没有超时保护的 netlink 会永久挂起，拒绝继续）"
+                    )));
+                }
+            }
+            // 接收缓冲调大，降低 dump 期间 ENOBUFS 概率。设不上只是优化失效，可容忍。
             let bufsize: libc::c_int = 1 << 20;
             libc::setsockopt(
                 raw,
-                SOL_NETLINK,
+                libc::SOL_SOCKET,
                 libc::SO_RCVBUF,
                 &bufsize as *const libc::c_int as *const libc::c_void,
                 std::mem::size_of::<libc::c_int>() as libc::socklen_t,
@@ -1282,7 +1308,12 @@ impl Connection {
         let seq = self.next_seq();
         let msg = encode_dump(RTM_GETROUTE, seq, std::process::id(), family, table);
         let (acc, _) = self.request(&msg, RTM_NEWROUTE, seq)?;
-        Ok(flatten_routes(acc))
+        // 内核的 RTM_GETROUTE dump **不按请求里的 rtm_table 过滤**（实测：请求
+        // rtm_table=101 会连 main/local 表的路由一起返回）。必须在客户端按响应
+        // 消息自带的 rtm_table 过滤，否则「按 24 张表各 dump 一遍」会把表 101 的
+        // 路由收进 24 份，reconcile 据此产生 24 条重复删除 —— 第一次成功，
+        // 其余全部 ESRCH，回收/收敛整体失败（真机集成测试实测）。
+        Ok(filter_routes_by_table(flatten_routes(acc), table))
     }
 }
 
@@ -1709,6 +1740,58 @@ mod tests {
         let (parsed, is_done, _s) = parse_stream(RTM_NEWROUTE, 9, 4242, &buf).unwrap();
         assert!(is_done);
         assert_eq!(flatten_routes(parsed).len(), 2);
+    }
+
+    #[test]
+    fn success_ack_terminates_the_session() {
+        // 回归：内核的成功 ACK 是 NLMSG_ERROR + error==0。解析器曾只对
+        // error!=0 置 done，于是每次**成功**的 netlink 写入都会继续等下一条
+        // 消息直到超时（真机上表现为「装是装上了，但报 recv 超时」）。
+        // 构造 error=0 的 ACK：nlmsgerr 体 = i32(0) + 16 字节原始请求头。
+        let mut body = 0i32.to_le_bytes().to_vec();
+        body.extend_from_slice(&[0u8; 16]);
+        let m = nlmsg(NLMSG_ERROR, 0, 7, 4242, &body);
+        let (parsed, done, _s) = parse_stream(RTM_NEWROUTE, 7, 4242, &m).unwrap();
+        assert!(done, "成功 ACK 必须终结会话");
+        match parsed.as_slice() {
+            [Parsed::Ack { error, .. }] => assert_eq!(*error, 0),
+            other => panic!("应解析出一条 Ack，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn route_dump_results_are_filtered_by_table() {
+        // 回归：内核的 RTM_GETROUTE dump 不按请求的 rtm_table 过滤。构造一条
+        // 「表 101 的默认路由 + 一条 main 表路由」的 dump 响应，filter 必须
+        // 只留下表 101 的那条 —— 否则按 24 张表循环 dump 会重复收录，
+        // reconcile 产生重复删除（第二次起 ESRCH，真机实测）。
+        let mk = |table: u32, dst: Option<&str>, dst_len: u8, proto: u8| -> RouteEntry {
+            RouteEntry {
+                family: Family::V4,
+                table,
+                dst: dst.map(|s| s.parse().unwrap()),
+                dst_len,
+                gateway: None,
+                oif: Some(2),
+                prefsrc: None,
+                priority: 0,
+                protocol: proto,
+                scope: RT_SCOPE_LINK,
+                kind: RTN_UNICAST,
+            }
+        };
+        let all = vec![
+            mk(254, Some("192.168.10.0"), 24, RTPROT_KERNEL),
+            mk(101, None, 0, OUR_RTPROT),
+            mk(255, Some("127.0.0.1"), 32, RTPROT_KERNEL),
+            mk(101, Some("192.168.10.113"), 32, OUR_RTPROT),
+        ];
+        let kept = filter_routes_by_table(all, 101);
+        assert_eq!(kept.len(), 2, "只应留下表 101 的路由");
+        assert!(kept.iter().all(|r| r.table == 101));
+        assert!(kept.iter().any(|r| r.dst.is_none()), "默认路由应在结果里");
+        // 空表号请求不得把别人的表收进来
+        assert!(filter_routes_by_table(vec![mk(254, None, 0, RTPROT_KERNEL)], 101).is_empty());
     }
 
     #[test]

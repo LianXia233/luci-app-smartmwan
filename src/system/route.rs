@@ -201,7 +201,9 @@ pub fn plan(targets: &[WanTarget], mirror: &MirrorSet, families: &[Family]) -> R
                 oif: Some(t.ifindex),
                 prefsrc: t.src6,
                 kind: crate::system::netlink::RTN_UNICAST,
-                scope: crate::system::netlink::RT_SCOPE_LINK,
+                // 带网关 ⇒ global scope（同 default_v4 的说明：link scope 会被
+                // 内核以 ENETUNREACH 拒绝）。
+                scope: crate::system::netlink::RT_SCOPE_UNIVERSE,
                 priority: 1024,
             });
         }
@@ -642,9 +644,26 @@ mod tests {
     use super::*;
     use crate::system::netlink::{
         FakeNetlink, FR_ACT_TO_TBL, OUR_RTPROT, RTN_LOCAL, RTN_UNICAST, RTPROT_KERNEL,
-        RT_SCOPE_HOST, RT_SCOPE_LINK,
+        RT_SCOPE_HOST, RT_SCOPE_LINK, RT_SCOPE_UNIVERSE,
     };
     use std::net::Ipv4Addr;
+
+    /// 带网关的默认路由必须是 global scope。写成 link scope 时内核以
+    /// ENETUNREACH 拒绝安装（真机集成测试实测；FakeNetlink 不验证所以单测看不到）。
+    #[test]
+    fn gateway_default_routes_use_universe_scope() {
+        let via_gw = RouteSpec::default_v4(101, v4("192.168.10.1"), 2, None);
+        assert_eq!(via_gw.scope, RT_SCOPE_UNIVERSE);
+        // 无网关的链路级默认路由（点对点蜂窝）保持 link scope。
+        let on_link = RouteSpec::default_dev(101, 2, None);
+        assert_eq!(on_link.scope, RT_SCOPE_LINK);
+        // plan 产出的 v4/v6 网关路由同样必须是 universe。
+        let t = target(1, "wan", "eth0", "192.168.10.1");
+        let d = plan(&[t], &MirrorSet::default(), &[Family::V4, Family::V6]).unwrap();
+        for r in d.routes.iter().filter(|r| r.gateway.is_some()) {
+            assert_eq!(r.scope, RT_SCOPE_UNIVERSE, "{r:?} 带网关却用 link scope");
+        }
+    }
 
     fn v4(s: &str) -> IpAddr {
         s.parse().unwrap()

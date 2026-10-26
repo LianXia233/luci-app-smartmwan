@@ -169,18 +169,27 @@ impl Invocation {
         })
     }
 
-    /// 用于 `nft -f`：把生成好的脚本文件（0600，位于 state_dir）交给 nft。
+    /// 用于 `nft -f` / `nft -c -f`：把生成好的脚本文件（0600，位于 state_dir）交给 nft。
+    ///
+    /// `-c`（只试算不提交）必须与 `-f <文件>` **同时**出现：`nft -c <路径>` 会把
+    /// 路径当成一条命令来解析，报 `syntax error, unexpected /` 然后失败。
+    /// 这条曾让真机上每一笔事务都死在试算阶段（沙箱的替身不执行真命令，所以没暴露），
+    /// 回归测试锁死「check 调用的参数里 -c 与 -f 成对出现」。
     pub fn nft_file(
         nft: &str,
         file: &Path,
         check_only: bool,
         timeout: Duration,
     ) -> Result<Invocation> {
-        let flag = if check_only { "-c" } else { "-f" };
         let path = file
             .to_str()
             .ok_or_else(|| Error::Config("nft 脚本路径不是合法 UTF-8".into()))?;
-        Invocation::with_options(nft, &[flag, path], timeout, 8192, "nft")
+        let args: Vec<&str> = if check_only {
+            vec!["-c", "-f", path]
+        } else {
+            vec!["-f", path]
+        };
+        Invocation::with_options(nft, &args, timeout, 8192, "nft")
     }
 }
 
@@ -425,6 +434,24 @@ mod tests {
 
     fn echo_program() -> String {
         resolve_program(&["/bin/echo", "/usr/bin/echo"]).expect("测试环境需要 echo")
+    }
+
+    /// nft 探测路径的白名单程序（测试替身：`/bin/true` 恒成功）。
+    fn nft_stub() -> String {
+        resolve_program(&["/bin/true", "/usr/bin/true"]).expect("测试环境需要 true")
+    }
+
+    #[test]
+    fn nft_check_invocation_pairs_c_with_f() {
+        // `nft -c <文件>` 会把文件路径当成命令解析（真机实测报
+        // `syntax error, unexpected /`），试算因此永远失败、每笔事务都死在
+        // 第一阶段。这里锁死 check 调用的参数形态：-c 与 -f 必须成对。
+        let p = nft_stub();
+        let f = std::path::Path::new("/state/smw-1-1.nft");
+        let check = Invocation::nft_file(&p, f, true, Duration::from_millis(1000)).unwrap();
+        assert_eq!(check.args, vec!["-c", "-f", "/state/smw-1-1.nft"]);
+        let apply = Invocation::nft_file(&p, f, false, Duration::from_millis(1000)).unwrap();
+        assert_eq!(apply.args, vec!["-f", "/state/smw-1-1.nft"]);
     }
 
     #[test]

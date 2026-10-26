@@ -212,7 +212,10 @@ impl Default for Capabilities {
 pub fn probe_scripts() -> Vec<(&'static str, String, &'static str)> {
     let head = "table inet smwprobe {\n\tchain c {\n\t\ttype filter hook prerouting priority ";
     let prio = format!("{HOOK_PRIO}; policy accept;\n");
-    let mk = |body: &str| -> String { format!("{head}{prio}{body}\t{{}}\n{{}}\n") };
+    // 注意 `}}` 才是格式字符串里的一个字面 `}`：写成 `{{}}` 会产出 `{}` 两个字面量，
+    // 整条脚本就以 `{}` 收尾而不是 `}`，nft 报 `unexpected '}'` —— 这条曾让**每一条**
+    // mk() 探测都失败（真机上表现为大面积假降级），回归测试锁死收尾形状。
+    let mk = |body: &str| -> String { format!("{head}{prio}{body}\t}}\n}}\n") };
     vec![
         (
             "jhash_map",
@@ -644,7 +647,12 @@ pub fn build(input: &Input) -> Result<Program> {
     if lan.is_empty() {
         // 没有 LAN 设备就不分类，绝不能退化成「对所有接口分类」——
         // 那会把 WAN 侧入站流量也打上标记，直接改变转发行为。
-        chain_rules.push(format!("drop comment \"{TAG_NO_LAN}\""));
+        //
+        // 但「不分类」的意思是**不加标记规则**，不是 drop：prerouting 里的裸 drop
+        // 会断掉包括管理面在内的全部流量，把一个配置解析问题放大成全网瘫痪。
+        // 这里用 counter：流量原样走 main 表（= 插件安装前的行为），
+        // 同时标签留在链里，`nft list` 与事务复核都能看见这个状态。
+        chain_rules.push(format!("counter comment \"{TAG_NO_LAN}\""));
         issues.push(warn(
             "smartmwan.global.lan_zones",
             "未能确定 LAN 接口，nft 分类规则已全部停用".into(),
@@ -1009,6 +1017,12 @@ pub fn build(input: &Input) -> Result<Program> {
     let mut text = String::new();
     text.push_str("# smartmwand 生成的 nftables 程序，请勿手工编辑。\n");
     text.push_str("# 本批次只操作 table inet smw，绝不改动 fw4 的 table/链。\n");
+    // 幂等删除三连：先声明（不存在则创建空表、存在则无操作），再删除，再正式声明。
+    // 直接 `delete table inet smw` 在**表不存在**时整批失败
+    // （`nft -c` 与 `nft -f` 都一样：Could not process rule: No such file or directory），
+    // 那会让全新设备上的第一次提交永远死在试算阶段。这三行是一个原子批次，
+    // 对「表在/不在」都成立。
+    text.push_str(&format!("table inet {TABLE}\n"));
     text.push_str(&format!("delete table inet {TABLE}\n"));
     text.push_str(&format!("table inet {TABLE} {{\n"));
     text.push_str(&decl);
@@ -1082,8 +1096,12 @@ pub fn build(input: &Input) -> Result<Program> {
 }
 
 /// 卸载/停用时的清理脚本：只删自己的表。
+/// 清场程序：删掉本插表的表（停用 / 回滚到「从未安装」/ 关停回收都用它）。
+///
+/// 与 [`build`] 的主程序同一惯用法：先声明再删除，表不存在时也成功
+/// （否则「清场一个本来就没装的设备」会报错，而清场失败比不装严重得多）。
 pub fn teardown_program() -> String {
-    format!("delete table inet {TABLE}\n")
+    format!("table inet {TABLE}\ndelete table inet {TABLE}\n")
 }
 
 /// 安装到 `/etc/nftables.d/smartmwan.nft` 的静态占位文件。
@@ -1601,6 +1619,34 @@ mod tests {
     use super::*;
     use crate::system::netlink::Family;
 
+    /// 真机集成探测：设备上有 `nft` 且当前用户能跑 `nft -c` 时，
+    /// 把每条探测脚本的真实结果打印出来（`cargo test -- --nocapture` 看）。
+    ///
+    /// 它存在的理由是一次真实的排错：`nft -c <文件>`（缺 `-f`）会把路径当成命令
+    /// 解析，导致**每一条**探测都失败，而手动 `nft -c -f` 同样内容却通过 ——
+    /// 没有这条测试，这类「exec 通道与手敲命令不一致」的问题只能到真机部署后才暴露。
+    /// 没有 nft 或没有权限时安静跳过（不是失败）。
+    #[tokio::test]
+    async fn real_nft_probe_reports_each_script() {
+        if crate::system::exec::nft_program().is_none() {
+            eprintln!("[skip] 没有 nft 可执行文件");
+            return;
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        let Ok(nft) = Nft::new(dir.path()) else {
+            eprintln!("[skip] 构造 Nft 失败");
+            return;
+        };
+        for (key, script, desc) in probe_scripts() {
+            match nft.check(&script).await {
+                Ok(()) => println!("[probe ok]   {key} — {desc}"),
+                Err(e) => println!("[probe fail] {key} — {desc} — {e}"),
+            }
+        }
+        let caps = probe_caps(&nft).await;
+        println!("[probe caps] version={} {:?}", caps.version, caps);
+    }
+
     fn line(name: &str, slot: u8) -> Line {
         Line {
             name: name.into(),
@@ -1705,6 +1751,17 @@ mod tests {
         assert!(p.text.contains(TAG_NO_LAN));
         assert!(p.buckets.is_empty(), "没有 LAN 设备时不装桶规则");
         assert!(p.issues.iter().any(|i| i.message.contains("LAN 接口")));
+        // 「不分类」= 不加标记规则，绝不是 drop：prerouting 里的 drop 会断掉
+        // 包括管理面在内的全部流量（真机集成测试里 WSL 网络被这条规则打通过）。
+        let no_lan_line = p
+            .text
+            .lines()
+            .find(|l| l.contains(TAG_NO_LAN))
+            .expect("必须留下 no-lan 标签");
+        assert!(
+            no_lan_line.trim_start().starts_with("counter"),
+            "no-lan 规则只能是 counter，实际: {no_lan_line}"
+        );
         // 且必须仍然是合法批次（不含未闭合的花括号）
         assert!(p.text.trim_end().ends_with('}'));
     }
@@ -2286,7 +2343,11 @@ mod tests {
 
     #[test]
     fn teardown_only_deletes_own_table() {
-        assert_eq!(teardown_program(), format!("delete table inet {TABLE}\n"));
+        // 清场必须幂等：表不存在时也要成功（先声明再删的惯用法，见 build 组装处）。
+        assert_eq!(
+            teardown_program(),
+            format!("table inet {TABLE}\ndelete table inet {TABLE}\n")
+        );
     }
 
     #[test]
@@ -2346,6 +2407,29 @@ mod tests {
             // 沙箱无 nft：必须给明确错误；真机有 nft：必须成功。两种都不 panic。
             Ok(n) => assert!(n.program().contains("nft")),
             Err(e) => assert!(e.to_string().contains("nft"), "{e}"),
+        }
+    }
+
+    /// 探测脚本的形状必须是合法 nft：花括号配平、以 `}` 收尾、没有裸 `{}` 行。
+    ///
+    /// `mk()` 曾经把收尾写成 `{{}}`（Rust 格式字符串里这是字面 `{}`），于是每条
+    /// mk() 探测都以 `{}` 结束，`nft -c` 报 `unexpected '}'` —— 探测全失败，
+    /// 真机上会退化成大面积假降级。沙箱的替身不执行真 nft，所以只有形状断言能拦住它。
+    #[test]
+    fn probe_scripts_are_shape_valid() {
+        for (key, script, _desc) in probe_scripts() {
+            let opens = script.matches('{').count();
+            let closes = script.matches('}').count();
+            assert_eq!(opens, closes, "{key} 花括号不配平：{script}");
+            assert_eq!(
+                script.trim_end().lines().last(),
+                Some("}"),
+                "{key} 必须以单独一行 }} 收尾：{script}"
+            );
+            assert!(
+                !script.lines().any(|l| l.trim() == "{}"),
+                "{key} 含裸 {{}} 行（格式字符串转义错误）：{script}"
+            );
         }
     }
 

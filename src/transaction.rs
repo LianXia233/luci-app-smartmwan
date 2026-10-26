@@ -76,7 +76,7 @@ pub fn applied_nft_path(state_dir: &Path) -> PathBuf {
 // ==================== 阶段 ====================
 
 /// 事务阶段。名字同时进日志、回执与 RPC 响应，前端不必再翻译一遍。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Stage {
     Validate,
     Plan,
@@ -119,7 +119,7 @@ impl Stage {
 }
 
 /// 一个阶段的执行记录。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct StageRecord {
     pub stage: Stage,
     pub ok: bool,
@@ -145,7 +145,7 @@ impl StageRecord {
 ///
 /// 事务层**不自己分桶、不自己择优**：那两处逻辑在 `scheduler` 里已经各有一份实现，
 /// 在这里再算一次就等于「界面显示一套、内核下发另一套」。
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct Decision {
     /// 桶号 → 槽位，长度必须等于 `global.buckets`；`0` 表示该桶不分流。
     pub bucket_map: Vec<u8>,
@@ -502,7 +502,10 @@ impl Plan {
 ///
 /// 事务的任何结局（成功、被拒绝、已回滚）都必须是一份回执，因此 [`Coordinator::submit`]
 /// 不返回 `Result`：调用方不能因为走了错误分支而丢掉「内核现在是什么状态」这个信息。
-#[derive(Debug, Clone, Default)]
+///
+/// 派生 `Serialize` 是为了让 RPC 把回执**原样**转给前端（`smartmwan.apply` 的响应体
+/// 就是这份结构序列化的结果），而不是在传输途中压缩成布尔值。
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct Receipt {
     /// 事务 id，格式 `T<毫秒>-<pid>-<序号>`，同时写进快照与日志。
     pub id: String,
@@ -569,7 +572,7 @@ impl Receipt {
 // ==================== 回收报告 ====================
 
 /// 启动时的残留回收结果。
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct ReclaimReport {
     /// 删除的本插件 `ip rule` 条数。
     pub rules_removed: usize,
@@ -656,6 +659,12 @@ impl Coordinator {
     fn next_id(&self) -> String {
         let n = self.seq.fetch_add(1, Ordering::Relaxed);
         format!("T{}-{}-{}", crate::logging::now_ms(), std::process::id(), n)
+    }
+
+    /// 事务 id（热替换路径与日志关联用；序号与 `submit` 共用同一计数器，
+    /// 因此两次调用不会拿到同一个 id）。
+    pub fn next_transaction_id(&self) -> String {
+        self.next_id()
     }
 
     // ---------- 只读：生成计划 ----------
@@ -1223,6 +1232,16 @@ impl Coordinator {
         config::uci::write_atomic(&applied_nft_path(&self.plane.state_dir), text)?;
         config::Store::store_applied(&self.plane.state_dir, cfg, tx)?;
         Ok(())
+    }
+
+    /// 桶轮换热替换后的记账入口（M7 守护进程专用）。
+    ///
+    /// 热替换只改 `smw:bucket:*` 几条规则的映射值，不走完整事务；但 `applied.nft`
+    /// 描述的是「内核里现在是什么」，必须同步更新，否则下次完整提交的幂等判据
+    /// （逐字节比对）会把一次无变更提交误判成需要全量重写。
+    /// 与 [`Coordinator::persist`] 的区别只有调用场景，写入内容完全相同。
+    pub fn record_program(&self, text: &str, cfg: &Config, tx: &str) -> Result<()> {
+        self.persist(text, cfg, tx)
     }
 
     /// 逆序回滚。每个失败都记进回执并写日志，绝不静默。

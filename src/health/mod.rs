@@ -304,6 +304,11 @@ impl Tracker {
             probes_ignored: self.probes_ignored,
         }
     }
+
+    /// 完整状态迁移轨迹（RPC「单线详情」用）。只读拷贝，不影响状态机。
+    pub fn transitions(&self) -> Vec<Transition> {
+        self.machine.history().to_vec()
+    }
 }
 
 /// 追踪器集合：探测循环写、RPC 与调度器读。
@@ -345,15 +350,21 @@ impl Registry {
         f(&mut g)
     }
 
-    /// 记入一条结果；未知线路直接忽略并记日志（配置可能刚被改过）。
+    /// 记入一条结果。返回「本次是否发生状态迁移」。
+    ///
+    /// **未知线路**（追踪器不存在）才记 orphan 日志并丢弃。注意「找到了追踪器但
+    /// 没有迁移」与「没找到」是两件事：曾经把两者混为一个 bool，于是一次普通的
+    /// 无迁移探测也会打出「已丢弃」的假日志 —— 排障时它会把人带偏。
     pub fn record(&self, res: &ProbeResult, now_ms: u64) -> bool {
-        let mut hit = false;
+        let mut found = false;
+        let mut transitioned = false;
         self.with(|m| {
             if let Some(t) = m.get_mut(&res.req.wan) {
-                hit = t.record(res, now_ms);
+                found = true;
+                transitioned = t.record(res, now_ms);
             }
         });
-        if !hit {
+        if !found {
             logging::debug_ctx(
                 "health",
                 "probe-orphan",
@@ -361,7 +372,7 @@ impl Registry {
                 &[("wan", res.req.wan.clone())],
             );
         }
-        hit
+        transitioned
     }
 
     pub fn set_blocked(&self, name: &str, reason: Option<String>) {
@@ -370,6 +381,11 @@ impl Registry {
                 t.set_blocked(reason);
             }
         });
+    }
+
+    /// 某条线路的状态迁移轨迹；未知线路返回空而不是报错（配置可能刚被改过）。
+    pub fn transitions(&self, name: &str) -> Vec<Transition> {
+        self.with(|m| m.get(name).map(|t| t.transitions()).unwrap_or_default())
     }
 
     /// 对所有线路做时间推进，返回发生迁移的条数。
@@ -964,6 +980,25 @@ mod tests {
         let mut res = res(ProbeProto::Icmp, Outcome::Reply { rtt_ms: 5 }, 1);
         res.req.wan = "gone".into();
         assert!(!r.record(&res, 1), "未知线路的结果必须被明确丢弃");
+    }
+
+    #[test]
+    fn known_line_without_transition_is_still_recorded() {
+        // 回归：record() 曾把「没有发生状态迁移」当成「未知线路」打孤儿日志。
+        // 判据是数据落没落账：probes_total 必须 +1，且返回值只表达「有没有迁移」。
+        let cfg = cfg_wans(&["wan1"]);
+        let r = Registry::new();
+        r.ensure(&cfg, 0);
+        let mut res = res(ProbeProto::Icmp, Outcome::Reply { rtt_ms: 5 }, 1);
+        res.req.wan = "wan1".into();
+        // 首轮一定发生 unknown -> healthy 迁移（返回 true）；第二轮状态不变
+        // （返回 false）但数据必须照常记入 —— 曾把后者误报成「未知线路已丢弃」。
+        assert!(r.record(&res, 1), "首轮应有迁移");
+        assert!(!r.record(&res, 2), "第二轮无迁移，返回值应为 false");
+        let s = r.snapshot(2);
+        let w = s.get("wan1").expect("已知线路必须有追踪器");
+        assert_eq!(w.probes_total, 2, "两次结果都必须记入追踪器");
+        assert_eq!(w.last_outcome.as_deref(), Some("响应 5ms"));
     }
 
     #[test]
