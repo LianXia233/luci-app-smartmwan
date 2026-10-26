@@ -61,30 +61,54 @@ DoD：
 * [x] 装配层 `scheduler::decide()`：单一所有者持有 `Machine`/`Picker`，未测量首轮显式说明；
 * [x] `Outcome.changed` 由真实桶图比较得出 —— 决策未变即不产生任何数据面写入（这是「不做高频全量重建」
       在应用层的落点）；
-* [x] 276 个 lib 单测（其中 balancing 不变式 17 条）。
+* [x] 276 个 lib 单测（其中 balancing 不变式 17 条）—— 这是 **M4 收口时**的数字，M5 之后为 329。
 
-## M5 —— 规则层（游戏路由）（未开始）← **当前落点**
+## M5 —— 规则层（游戏路由）（已完成）
 
-范围：`src/rules/{mod,matchers,games,dns_sets}.rs`
-
-DoD：
-
-* [ ] `GameSpec`：从 UCI `config game` 段编译出匹配器集合，按 (priority, name) 确定性排序；
-* [ ] 冲突检查：重叠目的段、同优先级歧义、`pin_wan` 指向已禁用/不存在的线路；
-* [ ] 预置库：**只提供用户可自行编辑的数据文件**（`root/usr/share/smartmwan/games/`），
-      本项目**绝不内置编造的服务器 IP/端口**；无来源的数据一律不放；
-* [ ] 域名规则 → 动态 nft 集合：TTL/过期、`flags dynamic,timeout; size 1024`、
-      `MAX_SET_ELEMENTS=2048` 上限与超限告警；
-* [ ] 文档化的限制：DNS 解析结果与真实连接目的不一致（CDN 任播、GeoDNS）、DoH/DoT 绕过、
-      IPv6 需要单独解析 AAAA、集合过期与连接寿命不同步；
-* [ ] 与 `GamePolicy` 的联动：主备模式下 `Follow` 不得把普通流量泄到备份线。
-
-## M6 —— 事务层（未开始）
-
-范围：`src/transaction.rs`，把 M2 的 `route::Applier` 与 `firewall::Nft` 编排成一次可回滚提交。
+范围：`src/rules/{mod,matchers,presets,dns_sets}.rs`（2270 行，51 条单测）
 
 DoD：
 
+* [x] `GameSpec`：从 UCI `config game` 段编译出匹配器集合，按 (priority, name) 确定性排序
+      （`rules::compile`；slug 冲突按排序顺序加 `-2`/`-3`，同一输入两次编译产物逐字节相同）；
+* [x] 冲突检查：重叠目的段与同优先级歧义在 `config::validate::overlaps()`（20 条单测），
+      `pin_wan` 指向已禁用/不存在的线路在 `rules::compile` 里直接报错；
+* [x] 预置库：**只提供用户可自行编辑的数据文件**（`/usr/share/smartmwan/presets/*.json`），
+      本项目不内置任何服务器 IP/端口，缺 `source` 的来源声明直接拒绝加载（Error）；
+      `presets::tests::no_preset_is_bundled_in_code` 把这条钉住；
+* [x] 域名规则 → 动态 nft 集合：`dns_sets::Registry` 按域名对账（增/删/保留分别计数），
+      `flags dynamic,timeout; size 1024` 由 `firewall` 声明，寿命来自
+      `global.dns_ttl_floor_s`（默认 300 秒，校验 30..86400）；
+      `MAX_SET_ELEMENTS=2048` 超限在 `rules` 层报错而不是截断；
+* [x] 文档化的限制：`dns_sets` 模块头六条（getaddrinfo 拿不到 TTL、CDN/anycast、
+      DoH/DoT 绕过、IPv6 不进集合但计入 `v6_skipped`、不看 SNI、解析失败不算线路故障）；
+* [x] 与 `GamePolicy` 的联动：主备模式 + `game_policy=follow` 时游戏规则整体不下发
+      （`rules::tests::failover_follow_blocks_game_rules`），
+      `selection=best` 无择优结论时进 `pending` 而不是随便指一条线路；
+* [x] 端到端单测：`rules::tests::compiled_specs_are_accepted_by_firewall_build` 把规则层产物直接
+      喂进 `firewall::build()`，断言集合声明与规则文本同时出现（分层契约漂移只能在这里被抓到）；
+* [x] 规则层落地过程中抓出并修复**三处数据面静默放宽**缺陷：`fdb82f5`（MAC 匹配项被 `@` 前缀过滤
+      整条丢弃）、`71d1680`（域名条件被固定网段挤掉，且设备不支持动态集合时退化成命中全部新建连接的
+      兜底规则）、`9f55b26`（`caps.ether_sets == false` 时只丢客户端条件继续下发，把「一台主机」
+      放宽成「全 LAN」，而警告文案还写着「降级为不匹配」）。三者都补了「条件必须出现在最终 nft 文本里
+      或规则整条不存在」的断言 —— 旧测试只验证集合被**声明**过，所以一直是绿的
+      （详见 `docs/PROGRESS.md` §6.7/6.8/6.9）。
+
+真机才能收口的项目（不属于本层 DoD，但 M10 之前不能宣称完成）：
+
+* [ ] `nft -c` 校验生成的脚本（沙箱无 `nft` 二进制）；
+* [ ] 动态集合的真实老化行为与 `dns_ttl_floor_s` 的观感一致性；
+* [ ] `ether saddr` 在目标设备 nft 版本上的实测（`probe_scripts` 的 `ether_sets`）。
+
+## M6 —— 事务层（未开始）← **当前落点**
+
+范围：`src/transaction.rs`，把 M2 的 `route::Applier` 与 `firewall::Nft` 编排成一次可回滚提交，
+并把 M5 的规则层真正接上（`rules::compile()` → `firewall::Input::games`）。
+
+DoD：
+
+* [ ] **装配**：一次提交内把 `config → rules::compile → firewall::build → nft apply → route apply` 串起来，
+      中间任一步失败都不留下半套状态；
 * [ ] 单事务锁（同一时刻只允许一个提交者，含并发 RPC 场景）；
 * [ ] validate → plan → dry-run(`nft -c`) → apply → verify → commit last-good；任一步失败按 `Undo` 逆序回滚；
 * [ ] 残留检测：启动时先回收上一次崩溃留下的对象（按 `NS` 前缀与 `OUR_RTPROT` 判定所有权）；

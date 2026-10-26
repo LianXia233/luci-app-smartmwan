@@ -30,6 +30,25 @@
   WeightedHash）、动态算法（LeastNewConnections / LeastTraffic）带单轮搬动预算与
   优势闸门、主备切换与四条件回切（预热 / 稳定时间 / 连续成功 / 最小间隔 + 二次确认）、
   游戏低延迟评分与滞回择优、强制切换与「目标暂不可用时保留指令」语义。
+* **规则层 `src/rules`**（任务书执行顺序第 6 步「游戏路由」）：把「用户写的条件」编译成
+  数据面能接受的 `firewall::GameSpec`，本身不生成任何 nft 文本 —— 匹配范围与语法兼容性
+  放进同一个函数时，两类错误的表现会互相掩盖。四个模块：
+  `matchers.rs`（CIDR 归一即网络位清零、裸地址补 /32|/128、按族分拣去重；端口拒绝 `0` 起点、
+  `0-1024`、逆序与取反；MAC 接受冒号/短横/点分三种写法并统一小写；域名拒通配符与 URL；
+  **遇到坏值一律报错而不是跳过**，跳过会让「拦 10 段」静默变成「拦 9 段」）、
+  `presets.rs`（预置项从 `/usr/share/smartmwan/presets/*.json` 加载，**代码里不内置任何
+  游戏服务器 IP/端口**，`source` 来源字段缺失即整条拒绝；单文件 512KiB 上限、跨文件重名检测、
+  一个坏文件让整批失败而不是静默忽略）、
+  `dns_sets.rs`（域名→动态集合的注册表：按域对账增量、过期、两寿命窗口的陈旧刷新，
+  解析走 `spawn_blocking` + 超时并分类 `NotFound`/`Timeout`/`LocalError`，
+  **解析失败不清空旧元素也不计为线路失败**）、
+  `mod.rs`（`compile()` 负责预置项与规则的合并语义、slug 去重、族分拣、启停与模式感知，
+  择优结论未出时进 `pending` 而不是猜一条线路）。
+  新增配置项 `global.dns_ttl_floor_s`（默认 300 秒，校验 30..=86400）——`getaddrinfo`
+  不返回 TTL，集合元素寿命只能取一个下界，这是明知不完备的折中而非最优值，已在 schema 注释里写明。
+  端到端单测 `compiled_specs_are_accepted_by_firewall_build` 把「配置→GameSpec→nft 文本」串起来，
+  契约漂移在提交前就会被抓到。本层 **51 条单测**（`dns_sets` 15 / `matchers` 12 / `presets` 10 /
+  `mod` 14），lib 单测从 276 增至 328；数据面同类缺陷再修一处后为 **329**。
 * **工程闸门**：`cargo clippy --offline --all-targets -- -D warnings` 归零
   （20 条 lib 告警逐条修，只保留 1 处带中文说明的 `#[allow]`，在测试夹具里）；
   `cargo fmt --all` 建立基线，此后 `clippy` / `fmt --check` 与单测同为提交前置条件。
@@ -46,6 +65,11 @@
 
 ### 变更
 
+* 骨架目录 `root/usr/share/smartmwan/games/` 改名为 `presets/`，与代码常量
+  `rules::presets::PRESET_DIR = "/usr/share/smartmwan/presets"` 对齐。两处不一致的后果是
+  「装了包但预置目录不存在」或「用户往 games 里放文件读不到」；今后路径以代码常量为唯一权威。
+* 文档的行数口径统一为「原始文件行数（含空行与注释）」，统计命令写进 `docs/PROGRESS.md` §2；
+  旧表里偏低的数字（合计 17,494）不是代码变少了，是口径不同。
 * `interval_elapsed()` 现在把 `last_change_ms == 0`（从未变更过）判为「间隔已满足」，
   否则进程启动后的第一次决策会被一个不存在的历史切换永久卡住。
 * `failover::Machine` 的最小切换计时改为「任何真实变更都刷新（含变为不分流）」，
@@ -59,6 +83,26 @@
   避免回切/择优动作被反复执行。
 * 探测批次取消路径：`JoinSet::abort_all()` 取代 `shutdown()`（后者返回 future，
   未 await 时什么都不做，取消会退化成「等全部探测跑完」）。
+* **规则层三处「静默放宽匹配面」的数据面缺陷**（同一类：不报错、甚至带一条看起来合理的警告，
+  只是多命中流量）：
+  1. MAC 条件整条丢失（`fdb82f5`）。生成器把匹配项拼进规则时带了一个
+     `.filter(|m| !m.starts_with('@'))`，而裸集合引用恰好以 `@` 开头，于是**每一条** MAC
+     匹配项都被丢掉：一条「只针对这台主机」的游戏规则退化成命中该范围内全部新建连接。
+     现在集合引用一律带字段名（`ether saddr @smw_g_<slug>_mac`）且拼接处不再做任何过滤，
+     并补了 `ether saddr @…` / `ip saddr @…_cli4` / `ip daddr @…_dst4` 三条存在性断言
+     —— 旧测试只检查集合是否**声明**过，所以一直是绿的。
+  2. 域名条件被固定网段挤掉，不支持时还退化成兜底规则（`71d1680`）。同一规则的 v4 目的条件
+     原先只取「第一类非空」，同时写了 `target` 和 `domain` 时域名条件不生效；而域名条件因
+     设备 nft 不支持 `dynamic,timeout` 集合被跳过时，规则会落到「无目的条件」分支，
+     变成命中该主机全部新建连接的兜底规则 —— 比「不生效」严重得多。现在同一族的
+     每个目的条件各出一条规则，只有「本来就没有任何目的条件」时才下无目的规则，
+     并去掉了循环外多推的一条重复所有权标签。
+  3. 客户端条件全部失效时规则被放宽到全 LAN（`9f55b26`）。规则用 `client_mac` 限定主机，
+     而设备 nft 不支持 `ether_addr` 集合时，代码只丢掉该匹配项并写一条警告 ——
+     少一个条件不是「不生效」而是「匹配面变大」，降级后命中**全 LAN** 的新连接；
+     且警告文案写的是「已降级为不匹配」，与真实行为相反。现在客户端条件全部无法生效时
+     **整条规则不下发**（与域名条件同一原则），并把文案改成如实描述。
+     共同教训：能力降级路径必须能证明「匹配面没有变宽」—— 断言最终文本里条件还在，或规则整条不存在。
 * 安装期 nftables 静态占位（`firewall::include_file_text()`）不再声明第二条挂
   `prerouting` 的 `output` 链：链名与 hook 类型不一致是语义错误（重复注册同一 hook），
   而 `type route hook output` 属于未经设备实测的语法，写进静态占位会让 fw4 在不支持的
@@ -66,18 +110,24 @@
 
 ### 已知缺失（尚未实现，别当作已完成）
 
-* `src/rules`（游戏/客户端/域名规则 → nftables 对象）——占位。
 * `src/transaction`（校验→下发→回读→回滚 + last-good）——占位。
 * `src/rpc`（Unix socket JSON RPC + ACL + 审计）——占位。
 * `src/main`（守护进程入口与 tokio 监督循环）——占位。
+* 预置项**数据文件**未提供（`root/usr/share/smartmwan/presets/*.json`）：加载器与校验已就位，
+  但因「不得编造服务器 IP/端口」，在拿到可引用来源之前不入库任何具体地址。
+* 规则层的**运行期装配**未接：`rules::compile()` → `firewall::build()` → 下发、以及域名集合的
+  周期刷新，目前只有单测把链条串起来（`rules::tests::compiled_specs_are_accepted_by_firewall_build`）；
+  事务层（M6）与守护进程（M7）都还不存在，所以规则层「代码完成」**不等于**「设备上生效」。
 * LuCI 前端 7 个页面、CSS、rpcd ucode 桥、ACL JSON、menu.d JSON——未创建。
 * OpenWrt 包 Makefile、procd 脚本、UCI 默认配置、`/etc/nftables.d` 片段、
   apk 维护脚本——未创建。
 * 真机验证：**未做**。沙箱是 root 容器，但没有 `nft` 二进制、没有 netfilter 支持、
   没有路由器；`ip rule` / `ip route` 只读可用，因此 netlink 解码有单测背书，
   下发路径、fw4 语法、LuCI 页面与 apk 安装全部未经真实设备验证。
+  本轮新增两项只能在设备上确认：`flags dynamic,timeout` 集合的实际老化行为，
+  以及 `ether saddr @set` 在 bridge 口与 VLAN 子接口上的匹配范围。
 * 沙箱可交付的静态结论已齐：`clippy -D warnings` 0 告警、`fmt --check` 无差异、
-  `build` 0 告警、276 单测通过、禁 Lua 检查通过 —— 这五项每次提交前重跑。
+  `build` 0 告警、329 单测通过、禁 Lua 检查通过 —— 这五项每次提交前重跑。
 
 ## [0.3.0] — 2026-10-26（内部里程碑）
 

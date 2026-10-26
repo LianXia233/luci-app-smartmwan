@@ -156,12 +156,40 @@
 * 打包时依赖必须显式声明（apk），且**不声明** `luci-lua-runtime`。
 * **状态**：依赖已固定；打包声明未开始（M9）。
 
+### 14.1 规则数据文件（游戏预置项）的供应链
+
+这一面比 crate 依赖更危险，因为它的内容**直接决定数据面放行范围**：一份被污染的
+`/usr/share/smartmwan/presets/*.json` 等于把用户游戏流量指向攻击者网段。现有防护：
+
+| 威胁 | 机制 | 位置 |
+|---|---|---|
+| 编造的服务器地址被当成权威数据 | 本项目**不内置任何**预置数据；`source` 缺失即整条拒绝加载 | `presets::validate`，单测 `no_preset_is_bundled_in_code` / `missing_source_is_error` |
+| 超大文件耗尽内存 | 先 `metadata()` 判大小再读，>512KiB 直接拒绝（不是截断读取） | `presets::load_dir` + `MAX_FILE_BYTES` |
+| 同 id 不同地址互相覆盖 | 文件内重复 → 报错并带文件名；跨文件重复 → 排序后报错 | `presets::parse_text` / `load_dir`，单测 `duplicate_id_within_one_file_is_error`、`loads_directory_sorted_and_rejects_cross_file_dupes` |
+| 半个文件生效（静默降级） | 一个文件解析失败 → **整批失败**，不跳过；错误信息带文件名 | `load_dir`，单测同上一条的最后一段 |
+| id / 集合名注入 nft 语法 | id 只允许字母数字与 `_ . -`（≤40）；规则名经 `matchers::slug_of` 归一为 `[a-z0-9_]`（≤24）后进对象名；CIDR/端口/MAC/域名在加载时就校验 | `presets::validate`、`matchers::*` |
+| 数据文件写「全网段」变相全放行 | `targets` 与 `domains` 全空 → 拒绝；`0.0.0.0/0`、`::/0` 在 `matchers::normalize_prefix` 里拒绝 | `presets::validate`、`matchers::split_normalize` |
+| 设备 nft 不支持 `ether_addr` 集合 | 丢掉 MAC 条件继续下发 = 把「一台主机」放宽成「全 LAN」 | 客户端条件全部失效时**整条不下发**；单测 `mac_only_rule_is_not_emitted_when_ether_sets_unsupported`（`9f55b26`） |
+| 元素数量把集合撑爆 | 超 `MAX_SET_ELEMENTS` / 每规则 32 域名 / 每域名 32 地址 → **报错不截断** | `presets::validate`、`rules::compile` |
+
+**仍然敞口的部分（不声称已解决）**：
+
+* 数据文件本身的**真实性**无法由代码验证 —— `source` 只能是人工可追溯的声明；
+  设备侧不校验签名（引入签名校验要么增加依赖面，要么把信任交给 apk，都不等于验证了地址清单本身）。
+  M9 打包时应在包内提供**空目录 + README**，并在 UI 里显示 `source` 与 `updated`，把「这是谁的清单、多旧」摊开；
+* 预置项文件在运行期**不需要** root 写权限，但 `ruleset` 变更目前不触发审计（M7 RPC 层才有审计日志）；
+* 域名解析结果来自设备默认解析路径（`getaddrinfo`），如果 LAN 客户端用 DoH/DoT 绕过本机 DNS，
+  集合与实际连接目的会不一致 —— 属产品固有限制，必须在 UI 说明。
+
 ## 15. 当前敞口的诚实总结
 
 | 条目 | 是否可以声称安全 |
 |---|---|
 | 命令注入、配置只读、标记/路由一致性、残留清理、探测负载、日志脱敏 | 可以，依据是代码 + 单测（不含真机结论） |
+| 规则层「不放宽匹配面」（条件必须落进文本、超上限报错不截断、缺来源拒绝加载、不猜线路） | 可以，依据是代码 + 51 条单测（含端到端 `compiled_specs_are_accepted_by_firewall_build`）；但**运行期尚未接线**，结论只到「编译出的程序正确」 |
+| 预置项数据文件的**内容真实性** | **不可以** —— 代码只能验证来源声明存在、格式合法、数量有界，不能验证那份网段清单是否真的是游戏服务器 |
 | 断电重启幂等、5G 重拨、IPv6 实际转发路径、卸载彻底性 | **不可以**，只能说「机制存在」，需真机 |
+| `flags dynamic,timeout` 集合的真实老化、`ether saddr @set` 在 bridge/VLAN 上的匹配范围 | **不可以**，沙箱无 nft；规则文本已按能力探测降级，但设备行为未观测 |
 | ACL、并发事务锁、前端轮询 | **不可以**，尚未实现 |
 
 任何 UI 文案、README 或交付说明在 M7/M8/M9 完成前，都不得出现「权限受控」「事务安全」「无轮询泄漏」这类表述。

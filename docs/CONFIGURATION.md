@@ -92,17 +92,18 @@
 | `bypass_dst` | list | RFC 保留段 + 组播 + `::1/128` + `fc00::/7` 等 | 不分流的目的段；写 `0.0.0.0/0` 是错误（等于全局绕过） |
 | `lan_zone` | list | `lan` | 只有来自这些 zone 的流量参与分流 |
 | `enable_ipv6` | bool | `1` | 关闭时 IPv6 一律走 main 表（不接管） |
+| `dns_ttl_floor_s` | s | `300` | 域名规则解析出的集合元素寿命，校验 `30..=86400`。**这是折中不是最优**：实现用 `getaddrinfo`，它不返回真实 TTL，只能取一个下界。调小→解析次数与瞬时「集合里还没有」的窗口都变大；调大→CDN 换节点后旧 IP 仍在集合里命中。见 §3 的域名限制 |
 
 ### 1.5 运行与日志
 
-| 键 | 类型 | 默认 |
-|---|---|---|
-| `log_level` | enum | `info`（`error|warning|info|debug|trace`） |
-| `log_file` | path | `/tmp/log/smartmwan.log`（留空=只写 stderr） |
-| `log_max_bytes` | int | `524288`（<16384 告警：一次故障切换的日志会被截没） |
-| `log_keep_backups` | int | `3` |
-| `rpc_socket` | path | `/var/run/smartmwan/rpc.sock`（必须绝对路径且不含 `..`） |
-| `state_dir` | path | `/tmp/run/smartmwan`（last-good 与运行态；tmpfs，断电即清） |
+| 键 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `log_level` | enum | `info` | 取值 `error` / `warning` / `info` / `debug` / `trace` |
+| `log_file` | path | `/tmp/log/smartmwan.log` | 留空=只写 stderr |
+| `log_max_bytes` | int | `524288` | <16384 告警：一次故障切换的日志会被截没 |
+| `log_keep_backups` | int | `3` | 轮转保留的旧文件数 |
+| `rpc_socket` | path | `/var/run/smartmwan/rpc.sock` | 必须绝对路径且不含 `..` |
+| `state_dir` | path | `/tmp/run/smartmwan` | last-good 与运行态；tmpfs，断电即清 |
 | `require_confirm` | bool | `1` | 「可能失联」的变更必须前端二次确认 |
 
 ## 2. `config wan '<段名>'`
@@ -133,13 +134,13 @@
 |---|---|---|---|
 | `enabled` | bool | `1` | — |
 | `priority` | int | `50` | 越小越先匹配；同值按段名字典序（保证确定性）。**同优先级且匹配范围重叠 → 校验错误** |
-| `preset` | string | 空 | 预置标识；空表示纯自定义规则 |
-| `target` | list | 空 | 目的 IP/CIDR（v4/v6 混写，按族分拣）；`0.0.0.0/0`、`::/0` 被拒绝 |
-| `port` | list | 空 | `443` 或 `8000-8010`；空=不限端口；逆序范围拒绝 |
+| `preset` | string | 空 | 预置标识，指向 `/usr/share/smartmwan/presets/*.json` 里的 `id`（格式见 §3.1）；空表示纯自定义规则。标识不存在 → 校验错误 |
+| `target` | list | 空 | 目的 IP/CIDR（v4/v6 混写，按族分拣）；`0.0.0.0/0`、`::/0` 被拒绝。写法由 `rules::matchers` 归一：`10.0.0.5/24` → `10.0.0.0/24`，裸地址补 `/32`\|`/128` |
+| `port` | list | 空 | `443` 或 `8000-8010`；空=不限端口；逆序范围、`0` 起点、`0-1024`、逗号与取反写法一律拒绝（**不会**替你静默改成 `1-1024`） |
 | `proto` | enum | `both` | `tcp` / `udp` / `both` |
-| `client_ip` | list | 空 | 内网客户端 IP/CIDR |
-| `client_mac` | list | 空 | MAC，格式 `aa:bb:cc:dd:ee:ff` |
-| `domain` | list | 空 | **不支持通配符**，须逐条具体域名；依赖 DNS 解析（限制见下） |
+| `client_ip` | list | 空 | 内网客户端 IP/CIDR；单条规则上限 512 个元素，超了报错不截断 |
+| `client_mac` | list | 空 | MAC，`aa:bb:cc:dd:ee:ff`，也接受 `aa-bb-…` 与 `aabb.ccdd.eeff`，统一小写冒号形式 |
+| `domain` | list | 空 | **不支持通配符**，须逐条具体域名；每条规则最多 32 个域名、每域名最多 32 个地址。依赖 DNS 解析（限制见下，寿命取 `global.dns_ttl_floor_s`） |
 | `selection` | enum | `best` | `best` 择优 / `pin` 固定线路 / `follow` 跟随普通策略 |
 | `pin_wan` | string | 空 | `selection=pin` 时必填且必须存在，否则错误 |
 | `comment` | string | 空 | 仅 UI 展示 |
@@ -152,6 +153,71 @@
 * 域名规则的实现限制（必须在 UI 与文档同时出现）：DNS 解析结果 ≠ 真实连接目的（CDN 任播、GeoDNS、
   轮询）、DoH/DoT 流量无法从 53 端口识别、IPv6 需单独解析 AAAA、集合条目按 TTL 过期而连接寿命更长、
   动态集合容量上限（`DYNAMIC_SET_SIZE=1024`，全局元素上限 `MAX_SET_ELEMENTS=2048`）。
+  本实现额外受限于：`getaddrinfo` **不返回 TTL**，元素寿命只能取 `dns_ttl_floor_s` 这个下界；
+  解析失败（`NotFound`/`Timeout`/`LocalError`）**不清空集合里的旧元素，也不计为线路失败**。
+* 设备 nft 不支持 `flags dynamic,timeout` 集合时，该规则的域名条件**不下发**，并给出警告
+  （`smartmwan.game[<slug>].domains`）。此时**不会**退化成「无目的条件的兜底规则」——
+  那会命中该主机全部新建连接，比条件不生效严重得多。
+* 设备 nft 不支持 `ether_addr` 集合时，MAC 条件无法生效；如果这条规则**只**靠 MAC（或只靠
+  IPv6 客户端条件而本机 IPv6 已关闭）限定主机，那么**整条规则不下发**（`smartmwan.game[<slug>]`
+  的警告）。同理，少一个客户端条件不等于「更严格」，而是「范围放大到全 LAN」。
+
+### 3.1 预置项数据文件（`/usr/share/smartmwan/presets/*.json`）
+
+路径的唯一权威来源是 `src/rules/presets.rs::PRESET_DIR`（同名常量，不要凭记忆改写）。
+**本仓库不内置任何游戏服务器 IP/端口**：代码里没有预置数据，单测
+`rules::presets::tests::no_preset_is_bundled_in_code` 把这条钉住。用户/下游自行维护数据文件，
+且**必须**写 `source` 说明来源，缺失即整条拒绝。
+
+文件形态三种都接受（`parse_text` 依次尝试）：顶层数组、`{"presets": [...]}`、单个对象。
+
+```json
+{
+  "presets": [
+    {
+      "id": "pubg-eu",
+      "label": "PUBG 欧服（示例，地址请自行核实）",
+      "source": "https://example.com/official-server-list（须在 2026-10-26 之前核实）",
+      "updated": "2026-10-01",
+      "targets": ["203.0.113.0/24", "2001:db8::/48"],
+      "ports": ["30000-30010"],
+      "proto": "udp",
+      "domains": ["pubg.example.net"]
+    }
+  ]
+}
+```
+
+加载规则（都是刻意选择的，不是随手实现）：
+
+| 行为 | 说明 |
+|---|---|
+| 目录不存在 | 视为「无预置项」，不报错（未打包数据文件时属正常） |
+| 非 `.json` / 子目录 | 忽略 |
+| 单文件 > 512KiB | 报错（`MAX_FILE_BYTES`），不是截断读取 |
+| 一个文件解析失败 | **整批失败**，不静默跳过 —— 否则用户会以为预置项还在 |
+| 跨文件重复 `id` | 报错，避免两条同 id 不同地址的预置项 |
+| `id` 字符集 / 长度 | 只允许字母数字与 `_ . -`（含大写），≤40 字节。**刻意按最严的来**：它会出现在 UI 与审计文本里，也可能被下游拿去做对象名。注意 nft 对象名实际取自**规则段名**的 slug（`rules::compile` 用 `slug_of(&rule.name)`），不是预置项 id |
+| `targets` 与 `domains` 全空 | 报错（等于无目的条件，太危险） |
+| 元素数量 | 超 `MAX_SET_ELEMENTS` 报错不截断 |
+
+### 3.2 `preset` 与规则自身字段的合并语义
+
+`rules::compile()` 的合并表（写清哪个赢，避免 UI 与用户预期不一致）：
+
+| 字段 | 合并方式 | 理由 |
+|---|---|---|
+| 目的网段 `target` | **并集**（预置项 + 规则自身） | 预置项给服务器段，用户加自己的段，两者都要生效 |
+| 域名 `domain` | **并集** | 同上 |
+| 端口 `port` | 规则写了就用规则的，没写才用预置项的 | 把预置项的整段端口范围并进来会**静默扩大匹配面** |
+| 协议 `proto` | 规则不是 `both` 就用规则的，否则用预置项的 | 同上 |
+| `client_ip` / `client_mac` | 只用规则的 | 预置项描述服务器，不该规定「哪些主机」 |
+| `priority` / `enabled` / `selection` / `pin_wan` | 只用规则的 | 预置项是数据，不是策略 |
+
+不产出数据面规则、但会留一条可显示说明的四种情形：规则停用；`selection=follow`
+（本来就不该有独立标记）；全局为「主备」且 `game_policy=follow`（待命线路不允许被游戏流量使用）；
+`selection=best` 但本轮还没有择优结果 —— 最后一种进 `Compiled::pending` 并在 UI 显示「等待质量判定」，
+**绝不「先随便指一条」**，否则界面显示的择优结论就成了编造。
 
 ## 4. `config score 'default'`
 
@@ -226,8 +292,15 @@ config game 'demo'
 * 路径类：绝对路径、不含 `..`；
 * 名称类：段名字符集、重复段名、IFNAMSIZ 15 字符；
 * 数值类：桶数区间、平滑系数 `1..999`、超时 < 周期、恢复阈值 ≥ 故障阈值（否则警告）、
-  权重非 0、归一化基准非 0；
+  权重非 0、归一化基准非 0、`dns_ttl_floor_s` 必须 `30..=86400`；
 * 语义类：多条 primary、primary 不存在、backup_order 含主线路或重复项、
   启用但无可用线路、`bypass_dst` 含默认路由、规则无条件匹配、`pin_wan` 缺失/不存在、
   同优先级规则范围重叠；
-* 一致性类：IPv6 关闭时仍写 v6 目标/探测目标 → 警告；`protected_src` 为空 → 警告（失联风险）。
+* 一致性类：IPv6 关闭时仍写 v6 目标/探测目标 → 警告；`protected_src` 为空 → 警告（失联风险）；
+* 规则层（`rules::compile`，M5）：`preset` 标识在数据目录里不存在 → Error；
+  条件元素数量超上限（客户端 512、全局集合 2048、每规则 32 域名、每域名 32 地址）→ **Error 而非截断**；
+  mark 为 0、`pin` 指向未启用的槽位（0 或 >24）→ Error；
+  写法归一在 `rules::matchers` 完成，坏值**报错不跳过**（跳过会让「拦 10 段」静默变成「拦 9 段」）；
+* 预置项数据文件（`rules::presets`）：缺 `source` → 整条拒绝；`targets` 与 `domains` 全空 → 拒绝；
+  单个文件解析失败 → **整批失败**（不静默忽略该文件）；跨文件重复 `id` → 拒绝；
+  文件 > 512KiB → 拒绝；文件内的 CIDR/端口/域名在加载时就校验，错误信息带文件名与 `id`。

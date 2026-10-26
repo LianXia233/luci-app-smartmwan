@@ -60,11 +60,11 @@
 
 | # | 要求 | 实现位置 | 状态 |
 |---|---|---|---|
-| 4.1 | 预置库可维护，**绝不编造服务器 IP/端口** | 计划 `src/rules/games.rs` + `root/usr/share/smartmwan/games/`（空目录） | 未开始（当前无预置数据，`preset` 字段留空） |
-| 4.2 | 自定义 CIDR / 协议 / 端口 / 范围 | `schema::GameRule`、`parse_port_range`（逆序/超范围拒绝） | 完成 |
-| 4.3 | 按 LAN 客户端 IP/MAC 匹配 | `client_ips`/`client_macs` + `validate::valid_mac` | 完成（数据层）；nft 侧 `ether_addr` 集合需真机 |
-| 4.4 | 域名规则 → 动态 nft 集合，并写清 DNS/CDN/DoH/IPv6/过期限制 | 计划 `src/rules/dns_sets.rs` | 未开始（`MAX_SET_ELEMENTS=2048`、`DYNAMIC_SET_SIZE=1024` 已预留） |
-| 4.5 | 规则优先级、启停、冲突检查 | `GameRule.priority`（同值按名称字典序，确定性）+ `validate::overlaps()`（目的网段/端口/客户端条件重叠且同优先级 → 明确 Error 并给出定序建议）、`pin_wan` 指向不存在线路 → Error | 部分：校验层 20 条单测已覆盖冲突检测；把规则编译成匹配器集合的 `rules` 层未开始 |
+| 4.1 | 预置库可维护，**绝不编造服务器 IP/端口** | `src/rules/presets.rs`：从 `PRESET_DIR=/usr/share/smartmwan/presets/*.json` 加载，单文件 512KiB 上限、跨文件重名检测、坏文件让整批失败；**代码里零内置数据**，`source` 来源字段缺失即整条拒绝 | 完成（加载器与校验，单测 `no_preset_is_bundled_in_code`/`missing_source_is_error`）；**数据文件本身未提供**，需权威来源 |
+| 4.2 | 自定义 CIDR / 协议 / 端口 / 范围 | `schema::GameRule`、`parse_port_range`（逆序/超范围拒绝）、`rules::matchers`（CIDR 网络位归一、裸地址补 /32\|/128、按族分拣；`0`/`0-1024`/取反/逗号写法拒绝） | 完成 |
+| 4.3 | 按 LAN 客户端 IP/MAC 匹配 | `client_ips`/`client_macs` + `validate::valid_mac` + `matchers::normalize_mac`（冒号/短横/点分统一小写）；nft 侧生成 `ether saddr @…_mac` / `ip saddr @…_cli4` / `ip6 saddr @…_cli6`；**设备不支持 `ether_addr` 集合或仅有 v6 客户端条件而 IPv6 关闭时，整条规则不下发**（丢条件等于放宽到全 LAN，见 `9f55b26`） | 完成（代码 + 存在性/不放宽断言 `fdb82f5`、`9f55b26`）；`ether_addr` 集合与 bridge/VLAN 口上的实际匹配范围**需真机** |
+| 4.4 | 域名规则 → 动态 nft 集合，并写清 DNS/CDN/DoH/IPv6/过期限制 | `src/rules/dns_sets.rs`：注册表按域对账（增/删/保留分别计数、共享 IP 取最大寿命、容量与每域上限 `MAX_DOMAINS_PER_RULE=32`/`MAX_ADDRESSES_PER_DOMAIN=32`/`DYNAMIC_SET_SIZE=1024`/`MAX_SET_ELEMENTS=2048`）、`expire()`/`refresh_stale()`（两寿命窗口）；解析 `spawn_blocking`+超时，分类 `NotFound`/`Timeout`/`LocalError`，**失败不清空旧元素也不计线路失败**。**动态集合当前是 `ipv4_addr`：AAAA 结果被计入 `v6_skipped` 并如实上报，不静默丢弃**，IPv6 域名分流实际不生效（这是能力边界，不是 bug）；六条限制写在模块头、`docs/CONFIGURATION.md` 与本表 | 完成（代码），元素真实老化**需真机** |
+| 4.5 | 规则优先级、启停、冲突检查 | `GameRule.priority`（同值按名称字典序）+ `validate::overlaps()`（重叠且同优先级 → Error 并给定序建议）+ `pin_wan` 指向不存在线路 → Error；`rules::compile()` 负责启停/模式感知（主备下 `follow` 不产出、`best` 无择优结论 → `pending` 而非猜线路）、slug 去重、族分拣、超上限报错而非截断 | 完成（校验层 + 规则层，51 条单测） |
 | 4.6 | 分线路质量指标 | `health::metrics`（RTT/抖动/丢包/不稳定度/P95，窗口 90 样本，`MIN_SAMPLES=5` 置信门槛） | 完成 |
 | 4.7 | 可配置评分公式与归一化/夹取/滑窗/滞回/最小稳定时间 | `scheduler::latency::{ScoreWeights, ratio, clamp01}`，`min_advantage_permille`、`min_stable_ms` | 完成 |
 | 4.8 | 模式感知（主备时游戏是否例外） | `scheduler::ranking()` 在 `Follow` 时只允许活动线路 | 完成 |
@@ -113,7 +113,7 @@
 
 | # | 要求 | 状态 |
 |---|---|---|
-| 9.1 | 功能测试 + 工程测试 | 部分：276 个 lib 单测全绿；工程闸门已在沙箱实测通过 —— `cargo clippy --offline --all-targets -- -D warnings`（0）、`cargo fmt --all -- --check`（无差异）、`cargo build --offline`（0 警告）、`./scripts/no-lua-check.sh`（退出 0）；`tests/`（集成）未开始 |
+| 9.1 | 功能测试 + 工程测试 | 部分：329 个 lib 单测全绿（`config 51 / system 109 / health 49 / scheduler 58 / rules 51 / logging 5 / lib 6`）；工程闸门已在沙箱实测通过 —— `cargo clippy --offline --all-targets -- -D warnings`（0）、`cargo fmt --all -- --check`（无差异）、`cargo build --offline`（0 警告）、`./scripts/no-lua-check.sh`（退出 0）；`tests/`（集成）未开始 |
 | 9.2 | 禁 Lua 自动化检查 | 完成 |
 | 9.3 | 10 条交付判据 | 进行中，逐条见 `docs/TESTING.md` §交付判据 |
 | 9.4 | 绝不把模拟数据当实时状态展示 | 设计上保证：未测量首轮会产出显式 note「尚未完成首轮探测…」，`Outcome` 无数据时 `carries_traffic()==false` |
@@ -153,13 +153,17 @@
 3 Rust 服务 + 健康状态机          完成
 4 策略路由 / nftables / 事务      模块 4a 完成（system/*），4b 事务编排未开始
 5 算法 + 主备切换                 完成
-6 游戏路由                        未开始  ← 当前落点
+6 游戏路由                        代码完成（rules/*，51 单测）；预置数据文件未提供、
+                                  运行期装配在 4b/M7 ← 上一落点已收口
 7 LuCI 页面                       未开始
 8 CSS                             未开始
 9 打包                            未开始
 10 自动化 + 真机验证              部分（Lua 检查完成；真机未做）
 11 修复 + 最终报告                持续
 ```
+
+当前正确落点是第 4 步的 **4b 事务编排**（M6）：规则层已能产出 `GameSpec`，
+但还没有运行期调用者，必须先在事务层把「配置→规则→nft 文本→下发→回读→回滚」串起来。
 
 安全与数据面正确性优先于界面打磨 —— 因此 §2、§5、§7 的「需真机」条目在没有设备时一律标注为未验证，
 不用界面完成度掩盖它们。

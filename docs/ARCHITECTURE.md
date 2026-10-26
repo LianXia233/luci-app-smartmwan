@@ -36,8 +36,11 @@
                                          └────────────────────────┘
 ```
 
-`rules`（M5）位于 `config` 与 `transaction` 之间：把 `config::GameRule` 编译成
-`firewall::GameSpec`，不碰内核，也不做决策。
+`rules`（M5，**代码已完成、运行期未接线**）位于 `config` 与 `transaction` 之间，四个子模块：
+`matchers`（纯函数归一：CIDR/端口/MAC/域名/slug）、`presets`（数据文件加载器，**代码零内置地址**）、
+`dns_sets`（域名→动态集合的注册表 + 解析，纯内存，不碰 nft）、
+`mod::compile`（合并预置项与规则、模式与启停感知、产出 `Vec<firewall::GameSpec>`）。
+它不碰内核、不做决策、**不生成任何 nft 文本**。
 
 ## 2. 每层的职责边界（越界就是设计错误）
 
@@ -47,7 +50,7 @@
 | `system` | 观察内核（netlink/`/sys`/`/proc`）、下发内核对象、执行白名单命令 | 做任何「哪条线路更好」的判断 |
 | `health` | 探测、算指标、跑状态机 | 决定谁承载流量、写内核 |
 | `scheduler` | 决策（唯一状态所有者） | 直接写内核 |
-| `rules` | 把规则编译成匹配器与 nft 对象描述 | 决策出口、绕过 `GamePolicy` |
+| `rules` | 把规则编译成匹配器与 nft 对象描述（`GameSpec`）、维护域名→地址的内存注册表 | 决策出口、绕过 `GamePolicy`、**生成 nft 文本**、把解析失败当成线路失败 |
 | `transaction` | 编排提交与回滚 | 修改决策内容 |
 | `rpc` | 鉴权、序列化、调用上面各层 | 自己保存业务状态 |
 
@@ -61,8 +64,12 @@
    interface::sample_traffic()  动态算法的输入
 5. scheduler::decide()          → Outcome{buckets, changed, active, standby, notes, …}
 6. Outcome.changed == false     → **到此为止，不写任何内核对象**
-7. transaction::commit()        → rules 编译 → firewall::build() → nft -c → nft -f → 回读 → last-good
-8. route::reconcile()           → ip rule / 路由表差量（只在槽位集合变化时）
+7. rules::compile()             → GameSpec（含 pending/issue；预置项与规则在此合并）
+8. transaction::commit()        → firewall::build() → nft -c → nft -f → 回读 → last-good
+9. route::reconcile()           → ip rule / 路由表差量（只在槽位集合变化时）
+
+（旁路，不在这条周期链上）rules::dns_sets::refresh_stale() → resolve() → observe()
+   → 只对域名规则做，按 `dns_ttl_floor_s` 的下界节流；解析失败**不回灌** health 层的线路状态。
 ```
 
 ## 4. 数据平面合同
@@ -81,8 +88,24 @@
 ## 5. nftables 对象命名与安装路径
 
 * 表：`table inet smw`（`NS` 前缀）；集合/链统一 `smw_*` / `smw:*` 标签。
+* 游戏规则的对象命名（规则层给的 slug，`[a-z0-9_]` ≤24，冲突加 `-2`/`-3`）：
+
+  | 对象 | 用途 | 类型 |
+  |---|---|---|
+  | `smw_g_<slug>_dst4` / `_dst6` | 固定目的网段（v4/v6 分集合，族不能混） | 静态 `ipv4/ipv6_addr` |
+  | `smw_g_<slug>_cli4` / `_cli6` | LAN 客户端条件 | 静态 `ipv4/ipv6_addr` |
+  | `smw_g_<slug>_mac` | LAN 客户端 MAC 条件 | 静态 `ether_addr` |
+  | `smw_g_<slug>_dns` | 域名解析结果 | `flags dynamic,timeout; size 1024`，寿命取 `global.dns_ttl_floor_s`（下限 60s） |
+  | 规则 `comment` | `smw:game:<slug>`（所有权标签，清理时只认这个） | — |
+  | 域名集合 `comment` | `smw:dns:<slug>` | — |
+
+  集合名来自**规则段名**的 slug，不来自预置项 id。规则文本里每条匹配项都必须带字段名
+  （`ether saddr @…` / `ip saddr @…` / `ip daddr @…`）：裸 `@set` 与后续条件混排语义不明，
+  而且历史上正是「以 `@` 开头的匹配项被过滤掉」导致 MAC 条件静默失效（`fdb82f5`）。
 * 安装期静态占位：`/etc/nftables.d/smartmwan.nft`，内容由 `firewall::include_file_text()` 生成
   （打包时必须用该函数产出，不许手写第二份）。它只声明表与一条空 prerouting 链。
+* 预置项数据目录：`/usr/share/smartmwan/presets/*.json`，路径常量在
+  `src/rules/presets.rs::PRESET_DIR`（**骨架目录必须与它同名**，本轮已把 `games` 改成 `presets`）。
 * fw4 挂接：UCI `config include` + `option type 'nftables'` + `option position`。
 * 运行期：守护进程按能力探测结果写完整程序；桶重排只 `replace rule … handle N`。
 
@@ -156,10 +179,20 @@ permission/unsupported/timeout/no_route/io/json`），前端据此区分「可�
 | 事务任一步失败 | 按 `Undo` 逆序回滚 + 记 transaction id，返回 `Error::Rollback` |
 | 命令超时 | `Error::Timeout{operation, elapsed_ms}`，子进程被 kill 且回收 |
 | 标记属于别人 | 完全不介入该连接（不抢别人的出口决策） |
+| 设备 nft 不支持 `dynamic,timeout` 集合 | **该规则的域名条件不下发**（不退化成无目的兜底规则）+ `Issue::Warning` 指向 `smartmwan.game[<slug>].domains` |
+| 设备 nft 不支持 `ether_addr` 集合，且规则只有 MAC 客户端条件 | **整条规则不下发**（丢掉条件继续下发会把「一台主机」放宽成「全 LAN」）+ `Issue::Warning` 指向 `smartmwan.game[<slug>]` |
+| 规则只有 IPv6 客户端条件而本机 IPv6 未启用 | 同上：客户端条件全灭 ⇒ 整条不下发 |
+| 规则同时写 `target` 与 `domain` | 同族每个目的条件**各出一条规则**（并集），不再是「取第一类非空」 |
+| 预置项数据文件缺 `source` / 内部或跨文件重复 id / 单文件坏 JSON | **加载期报错**，整批拒绝；错误带文件名与 id（不做「跳过这个文件」的静默降级） |
+| 域名解析失败（`NotFound`/`Timeout`/`LocalError`） | 集合里的旧元素**保留**，只累计失败计数；**不计为线路失败**（DNS 故障不等于出口故障） |
+| `selection=best` 但本轮无择优结论 | 规则进 `Compiled::pending`，不下发，UI 显示「等待质量判定」 |
 
 ## 9. 尚未决定 / 需要实现时确认
 
-* `rules` 层是否把域名解析委托给 dnsmasq 的 ipset 兼容接口，还是自己做解析 + `add element`
-  （倾向后者：可控 TTL、可如实报告解析失败，且不引入额外包依赖）；
+* ~~`rules` 层是否把域名解析委托给 dnsmasq 的 ipset 兼容接口~~ → **已决定：自己做解析 + `nft add element`**
+  （`rules::dns_sets::resolve` 用 `spawn_blocking` 包 `to_socket_addrs` + 硬超时）。理由：可控寿命、
+  可如实分类解析失败（NXDOMAIN / 超时 / 本地错误），且不引入额外包依赖。
+  **代价已写在代码里**：`getaddrinfo` 不返回 TTL，所以元素寿命取 `global.dns_ttl_floor_s` 下界（默认 300s），
+  这是明知不完备的折中；v6 结果计入 `v6_skipped`（IPv6 目的集合仍需真机确认）；
 * `WeightedEcmp` 的能力探测粒度（内核 `fib_multipath_hash` 与 `ip` 版本要分别测）；
 * 多实例（同一设备跑两个 `smartmwan` 配置集）明确**不支持**：标记区间与表号区间是全局唯一资源。

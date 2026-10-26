@@ -23,7 +23,7 @@ src/                    Rust 后端（1 个库 + 1 个守护进程二进制）
   system/               netlink、策略路由、接口拓扑、nftables 生成、conntrack、exec
   health/               探测（ICMP/TCP/UDP/DNS）、滑动窗口指标、线路状态机
   scheduler/            负载均衡桶分配、主备切换、滞回去抖、低延迟择优
-  rules/                流量分类（游戏白名单 / 客户端匹配 / 域名动态集合）  ← 未实现
+  rules/                流量分类（游戏白名单 / 客户端匹配 / 域名动态集合）  ← 代码完成，运行期未接线
   transaction.rs        校验→下发→回读→回滚 的单事务层                    ← 未实现
   rpc/                  Unix socket JSON RPC + ACL + 审计日志             ← 未实现
   main.rs               守护进程入口与 tokio 监督循环                      ← 未实现
@@ -36,9 +36,10 @@ tests/                  跨层集成测试
 
 ## 当前状态（2026-10-26）
 
-后端四层（config / system / health / scheduler）已实现并通过单元测试，
-`cargo test --offline --lib` = **276 passed / 0 failed**。
-规则层、事务层、RPC 层、守护进程入口、前端与打包尚未完成。
+后端五层（config / system / health / scheduler / rules）已实现并通过单元测试，
+`cargo test --offline --lib` = **329 passed / 0 failed**。
+事务层、RPC 层、守护进程入口、前端与打包尚未完成；规则层要特别说明：
+它的产物目前只被单测喂进数据面生成器，**运行期还没有调用者**，所以「代码完成」不等于「设备上生效」。
 逐条完成度见 [docs/PROGRESS.md](docs/PROGRESS.md)，交付判据见 [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)。
 
 **现在这个仓库不能装到路由器上用**——守护进程入口还没实现，
@@ -48,7 +49,7 @@ tests/                  跨层集成测试
 ## 开发环境命令
 
 ```sh
-cargo test --offline --lib                           # 单元测试（沙箱内可跑，276 条）
+cargo test --offline --lib                           # 单元测试（沙箱内可跑，329 条）
 cargo clippy --offline --all-targets -- -D warnings  # Lint：必须 0 警告
 cargo fmt --all -- --check                           # 风格：必须无差异
 cargo build --offline --release                      # 构建 smartmwand
@@ -69,6 +70,12 @@ cargo build --offline --release                      # 构建 smartmwand
 * **不谎报**。`Unsupported`/`LocalError` 不计入线路失败；没有采样就说没有采样；
   没有可用线路就不分流；加权 ECMP 直接返回不支持而不是伪实现。
 * **默认不改变现状**。`global.enabled = 0`，首次安装不动任何用户网络配置。
+* **规则层不放宽、不编造**。条件写错就报错而不是跳过（跳过等于「拦 10 段」变「拦 9 段」）；
+  元素数量超上限报错而不是截断；设备不支持动态集合时**不下发该条件**，客户端条件全部失效时
+  **整条规则不下发** —— 绝不退化成命中全部新建连接的宽规则；择优结论还没出来时规则进 `pending`，
+  不「先随便指一条」。
+* **不内置任何游戏服务器地址**。`rules/presets.rs` 只是加载器；数据文件必须写 `source`，
+  否则整条拒绝（单测 `no_preset_is_bundled_in_code` 钉住代码里零内置数据）。
 
 ## 许可
 

@@ -6,11 +6,13 @@
 ## 1. 三十秒版
 
 * 这是 OpenWrt/ImmortalWrt **25.12+** 的多 WAN 智能选路插件，**后端 Rust、前端 LuCI JS + ucode，全项目零 Lua**；
-* 已完成：配置层、系统交互层、健康层、调度层（276 单测全绿）；
-* 未完成：规则层、事务层、RPC 层、守护进程入口、前端、打包。**现在装到路由器上不能用**；
-* 下一步唯一正确落点：`src/rules`（任务书执行顺序第 6 步「游戏路由」）。
+* 已完成：配置层、系统交互层、健康层、调度层、规则层（329 单测全绿）；
+* 未完成：事务层、RPC 层、守护进程入口、前端、打包。**现在装到路由器上不能用**；
+* 规则层要说清一句：它能产出 `GameSpec`，也有端到端单测喂进 `firewall::build()`，
+  但**运行期没有任何调用者** —— 接线是 M6/M7 的活，别把「代码完成」当成「设备上生效」；
+* 下一步唯一正确落点：`src/transaction.rs`（M6），在事务层里把规则层接上。
 
-## 2. 改了会出事的六条不变式
+## 2. 改了会出事的八条不变式
 
 ### 2.1 fwmark 布局是数据平面合同
 
@@ -66,7 +68,31 @@ bit16..23 bucket、bit12..15 gen、bit8..11 class、bit0..7 slot。
 * 未完成首轮探测时 `decide()` 输出 note「尚未完成首轮探测…周期 Xms、超时 Yms」且**不承载流量**；
 * 全线路不可用 ⇒ 桶全 0 + `all_dead=true`，UI 必须显示「无可用出口」，不能显示「正常」；
 * 主备模式下备份线路不承载普通流量，除非 `game_policy=exception` 且规则显式命中；
-* 游戏预置库**绝不内置编造的服务器 IP/端口**，只放用户可编辑的数据文件。
+* 游戏预置库**绝不内置编造的服务器 IP/端口**，只放用户可编辑的数据文件（`presets::tests::no_preset_is_bundled_in_code`
+  与 `missing_source_is_error` 两条单测把「代码零内置」和「缺来源即拒绝」钉住）。
+
+### 2.7 规则层的六条不变式（M5 新增，最容易在重构时被写坏）
+
+* **规则层不生成 nft 文本**。`config`（用户写了什么）→ `rules`（这些条件在数据面上意味着什么）→
+  `system::firewall`（怎么写成 nft 脚本）。把「匹配范围」和「语法兼容性」塞进同一个函数，
+  两类错误的表现会互相掩盖。产物只有 `Vec<firewall::GameSpec>`（契约在 `src/system/firewall.rs:146`）。
+* **条件必须出现在最终文本里**，测试要按存在性断言（`ether saddr @…`、`ip saddr @…_cli4`、
+  `ip daddr @…_dst4`），不能只断言集合被**声明**过 —— 这正是 `fdb82f5`/`71d1680` 两个缺陷
+  当时躲过全部测试的原因。集合引用一律带字段名，拼接处**不做任何过滤**。
+* **能力不足 ⇒ 不下发该条件**，绝不退化成「无目的条件的兜底规则」。后者会命中该主机全部新建连接，
+  比条件不生效严重一个量级。同理：元素数量超上限（客户端 512 / 全局集合 2048 / 每规则 32 域名 /
+  每域名 32 地址）一律 **Error 不截断**；坏值**报错不跳过**（跳过等于「拦 10 段」变「拦 9 段」）。
+* **降级路径的通用判据：匹配面不得变宽**。三类同类缺陷都修在 `firewall::build()`：
+  MAC 匹配项被 `@` 前缀过滤丢弃（`fdb82f5`）、域名条件不支持时落到无目的兜底（`71d1680`）、
+  `caps.ether_sets == false` 时只丢客户端条件继续下发规则 —— 最后一条最阴，因为规则**还有**
+  目的条件看起来仍然精确，实际从「一台主机」变成「全 LAN」，而且旧警告文案写着「降级为不匹配」
+  （`9f55b26`）。现在规则想限定主机（写了 `client_mac` 或客户端 IP）却一个可用匹配项都不剩时，
+  **整条 `continue` 不下发**。新增任何条件降级分支时，照这条判据自查，并按
+  「条件还在文本里 / 规则整条不存在」写断言。
+* **不猜线路**。`selection=best` 而本轮没有择优结论时进 `Compiled::pending`，UI 显示「等待质量判定」；
+  主备模式 + `game_policy=follow` 时游戏规则整体不下发。
+* slug 由**规则段名**决定（`matchers::slug_of(&rule.name)`），不是预置项 id；改 id 改不了集合名。
+  slug 里**不能用 `clamp_str`**（它会追加 `…[截断 N→M 字节]` 这种人看的标记，而 slug 要进 nft 对象名）。
 
 ## 3. nftables / fw4 的事实依据（勿凭记忆改写）
 
@@ -97,7 +123,11 @@ UCI 文件 `/etc/config/smartmwan`，段类型 `smartmwan`(global) / `wan` / `ga
 * 线路段/游戏段**必须具名**（段名是主键，用于规则定位与冲突提示）；
 * 线路的 health 字段留空即继承 global（`decode_health(sec, base)` 的 base 语义）；
 * `enabled` 默认 `0`：**首次安装绝不能改变现有路由**（单测 `defaults_are_safe_disabled`）；
-* 未识别的用户手写键在 `encode_into()` 回写时原样保留，不静默丢弃。
+* 未识别的用户手写键在 `encode_into()` 回写时原样保留，不静默丢弃；
+* `dns_ttl_floor_s`（M5 新增，默认 300，校验 `30..=86400`）：UCI 键名与字段名**一致**，
+  它是 `getaddrinfo` 拿不到 TTL 时的**下界折中**，不是「真实 TTL」。改这个值等于同时改
+  解析频率与集合里旧 IP 的残留时间，两边都要在 UI 里如实说明；
+  新增键必须同时改三处：`schema.rs`（默认值）、`config/mod.rs`（decode/encode/diff）、`validate.rs`（区间）。
 
 ## 5. 本环境的限制（结论必须带这些前提）
 
@@ -119,6 +149,10 @@ UCI 文件 `/etc/config/smartmwan`，段类型 `smartmwan`(global) / `wan` / `ga
 * **远端 URL 里不留 token**（token 只在该次命令里内联使用）；仓库远端目前是空的，首个 push 需要
   `git push -u origin main`；
 * 提交身份用**每条命令的** `-c user.name=... -c user.email=...`，**绝不执行 `git config`**；
+  *例外留痕*：本轮为了让后续 `git push` 不用每次写全 refspec，执行过
+  `git config branch.main.remote origin` 与 `git config branch.main.merge refs/heads/main`，
+  这违反了本条约定。等效且合规的做法是首次 `git push -u origin main`。下次接手可以保留现状，
+  但**不要再新增** `git config` 改动；若要清理，`git config --unset branch.main.remote` 等即可。
 * 提交规范：`build:` / `feat:` / `fix(scope):` / `test(scope):` / `docs:` / `chore:`，中文正文，
   一次提交只做一件事（原子提交）；
 * **每完成一个阶段同步更新**：`CHANGELOG.md`、`docs/REQUIREMENTS.md`（状态列）、`docs/ROADMAP.md`（勾选）、
@@ -127,13 +161,19 @@ UCI 文件 `/etc/config/smartmwan`，段类型 `smartmwan`(global) / `wan` / `ga
 
 ## 7. 接手后的正确动作序列
 
-1. 跑 `cargo test --offline --lib`（期望 276）+ `./scripts/no-lua-check.sh`（期望 0）确认基线；
-2. 实现 `src/rules/matchers.rs`（纯函数：`(Config, GameRule) → 匹配器 + 冲突 Issue`）→ 单测；
-3. `src/rules/games.rs`（预置数据加载器，**无来源数据不入库**）→ `src/rules/dns_sets.rs`（域名→动态集合 + 过期）；
-4. 让规则层产出 `firewall::GameSpec`（契约**已存在**于 `src/system/firewall.rs:143`，`Input.games` 已被 `build()`
-   消费且有单测用手写 spec 覆盖）：规则层的职责是把 `Vec<GameRule>` 编译成按 `(priority, name)` 排序、
-   slug 化、族分拣、带 `dns_set`/`mark` 的 `GameSpec`，而不是改数据面接口；补「配置→GameSpec→nft 文本」的黄金样本测试；
-5. 然后才做 `src/transaction.rs`（M6）。**不要在规则层之前先写 RPC/main** —— 那会让 RPC 暴露没有数据面支撑的方法。
+1. 跑 `cargo test --offline --lib`（期望 **329**）+ `./scripts/no-lua-check.sh`（期望 0）确认基线；
+   再加 `cargo clippy --offline --all-targets -- -D warnings` 与 `cargo fmt --all -- --check`，两个都必须零；
+2. **M6 事务层** `src/transaction.rs`：单事务锁 → `config` 校验 → `rules::compile()` →
+   `firewall::build()` → `nft -c` 干跑（能力具备时）→ apply → verify → last-good，
+   失败按 `Undo` **逆序**回滚；启动时按 `NS` 前缀与 `OUR_RTPROT` 回收上次崩溃的残留。
+   规则层在这一步**第一次有运行期调用者**（`firewall::Input::games`）；
+3. **M7 RPC + main**：≥19 方法 + 统一信封 + `SO_PEERCRED` ACL + 审计 + tokio 监督循环
+   （探测环 / 调度环 / **域名集合刷新环** / SIGHUP 重载 / SIGTERM 优雅关停且关停必须撤销自己的对象）；
+4. M8 前端、M9 打包、M10 真机，按 `docs/ROADMAP.md` 的 DoD 逐条收口。
+
+**不要在事务层之前先写 RPC/main** —— 那会让 RPC 暴露没有数据面支撑的方法。
+`GameSpec` 契约（`src/system/firewall.rs:146`）已被 `build()` 消费、被规则层产出、
+被端到端单测串起来，**不要为了「装配方便」去改它**；要接的是调用方。
 
 ## 8. 绝对不要做的事
 
@@ -142,4 +182,9 @@ UCI 文件 `/etc/config/smartmwan`，段类型 `smartmwan`(global) / `wan` / `ga
 * 不要 flush 任何非 `inet smw` 的表，不要删非 `smw`/`smw_` 前缀的对象；
 * 不要覆盖 `/etc/config/network` 或 `/etc/config/firewall`（本项目对它们只读）；
 * 不要引入 `luci-lua-runtime` 或任何 `*.lua`（`no-lua-check.sh` 会拦，但也别靠脚本兜底）；
+* **不要内置任何游戏服务器 IP/端口**，也不要加载没有 `source` 的预置项数据文件；
+* **不要在规则条件上「放宽」**：能力不支持就不下发该条件，不要退回无目的/无客户端的兜底规则；
+  元素超上限不要截断，要报错；
+* 不要在匹配项拼接处加任何形式的 `filter`（`fdb82f5` 那个缺陷就是这么来的）；
+  集合引用必须带字段名；
 * 不要把 `git reset --hard` / `push --force` 用在已有历史上；文档与代码问题用新提交修正。
