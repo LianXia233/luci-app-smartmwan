@@ -1781,10 +1781,10 @@ mod tests {
             }
         };
         let all = vec![
-            mk(254, Some("192.168.10.0"), 24, RTPROT_KERNEL),
+            mk(254, Some("192.168.100.0"), 24, RTPROT_KERNEL),
             mk(101, None, 0, OUR_RTPROT),
             mk(255, Some("127.0.0.1"), 32, RTPROT_KERNEL),
-            mk(101, Some("192.168.10.113"), 32, OUR_RTPROT),
+            mk(101, Some("192.168.100.20"), 32, OUR_RTPROT),
         ];
         let kept = filter_routes_by_table(all, 101);
         assert_eq!(kept.len(), 2, "只应留下表 101 的路由");

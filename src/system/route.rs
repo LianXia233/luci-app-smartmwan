@@ -652,13 +652,13 @@ mod tests {
     /// ENETUNREACH 拒绝安装（真机集成测试实测；FakeNetlink 不验证所以单测看不到）。
     #[test]
     fn gateway_default_routes_use_universe_scope() {
-        let via_gw = RouteSpec::default_v4(101, v4("192.168.10.1"), 2, None);
+        let via_gw = RouteSpec::default_v4(101, v4("192.168.100.1"), 2, None);
         assert_eq!(via_gw.scope, RT_SCOPE_UNIVERSE);
         // 无网关的链路级默认路由（点对点蜂窝）保持 link scope。
         let on_link = RouteSpec::default_dev(101, 2, None);
         assert_eq!(on_link.scope, RT_SCOPE_LINK);
         // plan 产出的 v4/v6 网关路由同样必须是 universe。
-        let t = target(1, "wan", "eth0", "192.168.10.1");
+        let t = target(1, "wan", "eth0", "192.168.100.1");
         let d = plan(&[t], &MirrorSet::default(), &[Family::V4, Family::V6]).unwrap();
         for r in d.routes.iter().filter(|r| r.gateway.is_some()) {
             assert_eq!(r.scope, RT_SCOPE_UNIVERSE, "{r:?} 带网关却用 link scope");
