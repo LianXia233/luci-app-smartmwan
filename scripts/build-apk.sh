@@ -22,6 +22,15 @@
 
 set -eu
 
+# ---- 属主修正 ----------------------------------------------------------------
+# apk 会记录文件的实际 uid/gid。CI 里文件由 runner 用户创建，直接打包会得到
+# 「装到路由器上属主是 1001」这种坏包。OpenWrt 的 Makefile 用 $(FAKEROOT) 解决，
+# 这里同样处理：非 root 且装了 fakeroot 时，整个组装过程在 fakeroot 里重跑一遍
+# （install/mkdir 的属主记录因此是 root，而文件本身不需要真实 chown）。
+if [ "$(id -u)" != "0" ] && [ -z "${SMW_NO_FAKEROOT:-}" ] && command -v fakeroot >/dev/null 2>&1; then
+	exec fakeroot -- "$0" "$@"
+fi
+
 BIN_TARGET=${1:?用法: build-apk.sh <目标二进制> <宿主机二进制> <输出目录> [架构]}
 BIN_HOST=${2:?缺少宿主机二进制}
 OUT=${3:-dist}
@@ -94,7 +103,8 @@ mkdir -p "$OUT"
 PKG="$OUT/$NAME-$FULL_VERSION.apk"
 
 echo "==> 打包（$APK_TOOL mkpkg）"
-"$APK_TOOL" mkpkg \
+# SOURCE_DATE_EPOCH=0：与 OpenWrt 一致，固定时间戳让同一份输入产出同一个包。
+SOURCE_DATE_EPOCH=0 "$APK_TOOL" mkpkg \
 	--info "name:$NAME" \
 	--info "version:$FULL_VERSION" \
 	--info "arch:$ARCH" \
