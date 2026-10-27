@@ -1,0 +1,113 @@
+#!/bin/sh
+# build-apk.sh —— 把一个已编译好的 smartmwand 组装成 OpenWrt APK 包
+#
+# 为什么不用 OpenWrt SDK 的 `make package/.../compile`：
+#   那会拉起整套构建系统（feeds 更新 + 工具链 + 全包 Makefile 解析），
+#   而本包的 Rust 侧只是一个普通的 musl 静态二进制，用 cargo 交叉编译即可。
+#   这里只借 SDK 的 `apk` 打包工具（`apk mkpkg`），文件树由本脚本按
+#   Makefile 的 install 段等价组装 —— 两条渠道产出的包内容一致。
+#
+# 用法：
+#   scripts/build-apk.sh <目标架构二进制> <宿主机二进制> <输出目录> [架构]
+#
+#   目标架构二进制：aarch64-unknown-linux-musl 交叉编译产物（进包）
+#   宿主机二进制  ：本机编译产物，只用来生成 --dump-defaults / --dump-include
+#                   （这两份是纯文本，与架构无关；交叉产物在 CI 上跑不了）
+#   架构          ：默认 aarch64_cortex-a53（mediatek/filogic 等）
+#
+# 环境变量：
+#   APK_TOOL  apk 可执行文件路径（默认 `apk`，CI 里指向 SDK 的 host 工具）
+#
+# 产物：<输出目录>/luci-app-smartmwan-<版本>-r<发布号>.apk（未签名）
+
+set -eu
+
+BIN_TARGET=${1:?用法: build-apk.sh <目标二进制> <宿主机二进制> <输出目录> [架构]}
+BIN_HOST=${2:?缺少宿主机二进制}
+OUT=${3:-dist}
+ARCH=${4:-aarch64_cortex-a53}
+APK_TOOL=${APK_TOOL:-apk}
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+NAME=luci-app-smartmwan
+
+VER=$(sed -n 's/^PKG_VERSION:=//p' "$ROOT/Makefile" | tr -d '[:space:]')
+REL=$(sed -n 's/^PKG_RELEASE:=//p' "$ROOT/Makefile" | tr -d '[:space:]')
+[ -n "$VER" ] && [ -n "$REL" ] || { echo "无法从 Makefile 读出 PKG_VERSION/PKG_RELEASE" >&2; exit 1; }
+FULL_VERSION="${VER}-r${REL}"
+
+for f in "$BIN_TARGET" "$BIN_HOST"; do
+	[ -f "$f" ] || { echo "找不到二进制：$f" >&2; exit 1; }
+done
+
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+IDIR="$WORK/$NAME"
+
+echo "==> 组装文件树（$NAME $FULL_VERSION, $ARCH）"
+mkdir -p \
+	"$IDIR/usr/bin" \
+	"$IDIR/etc/config" \
+	"$IDIR/etc/init.d" \
+	"$IDIR/usr/share/rpcd/ucode" \
+	"$IDIR/usr/share/rpcd/acl.d" \
+	"$IDIR/usr/share/luci/menu.d" \
+	"$IDIR/usr/share/nftables.d/ruleset-post" \
+	"$IDIR/usr/share/smartmwan/presets" \
+	"$IDIR/www/luci-static/resources/view/smartmwan" \
+	"$IDIR/www/luci-static/resources/smartmwan" \
+	"$IDIR/lib/apk/packages"
+
+install -m 0755 "$BIN_TARGET" "$IDIR/usr/bin/smartmwand"
+
+# 配置与 nft 片段与代码同源：由宿主机二进制直接生成，避免仓库里存在一份会漂移的副本。
+"$BIN_HOST" --dump-defaults > "$IDIR/etc/config/smartmwan"
+"$BIN_HOST" --dump-include > "$IDIR/usr/share/nftables.d/ruleset-post/smartmwan.nft"
+
+install -m 0755 "$ROOT/root/etc/init.d/smartmwan" "$IDIR/etc/init.d/smartmwan"
+install -m 0644 "$ROOT/root/usr/share/rpcd/ucode/smartmwan.uc" "$IDIR/usr/share/rpcd/ucode/smartmwan.uc"
+install -m 0644 "$ROOT/root/usr/share/rpcd/acl.d/luci-app-smartmwan.json" "$IDIR/usr/share/rpcd/acl.d/luci-app-smartmwan.json"
+install -m 0644 "$ROOT/root/usr/share/luci/menu.d/luci-app-smartmwan.json" "$IDIR/usr/share/luci/menu.d/luci-app-smartmwan.json"
+
+# LuCI 前端资源（htdocs 下的相对路径要原样保留）
+# 用 cp -a 而不是 cpio：CI 的精简镜像里不一定装了 cpio，而 cp -a 到处都有。
+mkdir -p "$IDIR/www"
+cp -a "$ROOT/htdocs/." "$IDIR/www/"
+chmod -R u=rwX,go=rX "$IDIR/www"
+
+# ---- apk 需要的元数据（对应 include/package-pack.mk 的 lib/apk/packages/*）----
+echo "/etc/config/smartmwan" > "$IDIR/lib/apk/packages/$NAME.conffiles"
+
+SUM=$(sha256sum "$IDIR/etc/config/smartmwan" | cut -d' ' -f1)
+echo "/etc/config/smartmwan $SUM" > "$IDIR/lib/apk/packages/$NAME.conffiles_static"
+
+# 文件清单：在写 .list 之前生成，因此清单本身不会包含自己。
+( cd "$IDIR" && find . \( -type f -o -type l \) -print | sed 's|^\.||' | sort ) \
+	> "$IDIR/lib/apk/packages/$NAME.list"
+
+echo "==> 文件树预览"
+( cd "$IDIR" && find . -type f | sed 's|^\./||' | sort | head -30 )
+COUNT=$(cd "$IDIR" && find . -type f | wc -l)
+echo "    共 $COUNT 个文件，$(du -sk "$IDIR" | cut -f1) KiB"
+
+mkdir -p "$OUT"
+PKG="$OUT/$NAME-$FULL_VERSION.apk"
+
+echo "==> 打包（$APK_TOOL mkpkg）"
+"$APK_TOOL" mkpkg \
+	--info "name:$NAME" \
+	--info "version:$FULL_VERSION" \
+	--info "arch:$ARCH" \
+	--info "tags:openwrt:section=luci" \
+	--info "description:Multi-WAN smart routing: Rust daemon (smartmwand) + native LuCI JS frontend bridged through rpcd ucode. Zero Lua." \
+	--info "license:GPL-3.0-or-later" \
+	--info "origin:$NAME" \
+	--info "url:https://github.com/LianXia233/luci-app-smartmwan" \
+	--info "maintainer:luci-app-smartmwan contributors" \
+	--info "depends:firewall4 nftables luci-base rpcd ucode-mod-socket" \
+	--files "$IDIR" \
+	--output "$PKG"
+
+[ -f "$PKG" ] || { echo "打包失败：没有产物" >&2; exit 1; }
+echo "==> 完成：$PKG（$(stat -c%s "$PKG" 2>/dev/null || echo '?') 字节）"
+echo "    安装：apk add --allow-untrusted $PKG    # 未签名包需 --allow-untrusted"

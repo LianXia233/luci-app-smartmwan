@@ -1,20 +1,17 @@
 name: build
 
-# 编译策略（刻意不用 OpenWrt SDK）：
-#   OpenWrt SDK 的 `make package/.../compile` 会拉起整套 OpenWrt 构建系统
-#   （feeds 更新 + 工具链 + 上千个包的 Makefile 解析），单次 15 分钟起，
-#   而本包的 Rust 部分本来就只是一个普通的 musl 静态二进制。
-#   所以这里直接用 Rust 工具链交叉编译：rustup target + cargo，C 运行时
-#   由 Zig 自带（cargo-zigbuild），产物是静态链接的 musl 可执行文件，
-#   与 SDK 里用 TARGET_CC 链接出来的结果一致。
-#   安装包（apk/ipk）仍由 Makefile 在 SDK 环境下产出，不在 CI 里做。
+# 编译策略：**只有版本号变化才编译**（日常提交不触发）。
+#   触发：Makefile 改动（版本号所在文件）/ tag / 手动 dispatch → gate job 精确比对
+#          PKG_VERSION 与 PKG_RELEASE，未变化则全部 skip。
+#
+# 产物策略：只出 aarch64_cortex-a53 的 APK（mediatek/filogic、ipq807x 等主流 ARM64 路由）。
+#   * Rust 用工具链交叉编译（rustup target + cargo-zigbuild，Zig 自带 musl 运行时），
+#     **不**用 OpenWrt SDK 的 make package/compile —— 那会拉起整套构建系统
+#     （feeds + 工具链 + 全包解析，单次 15 分钟起），而本包 Rust 侧只是一个
+#     普通 musl 静态二进制，产物等价；
+#   * APK 打包只借 SDK 里的 `apk mkpkg` 工具（不是编译器），文件树由
+#     scripts/build-apk.sh 按 Makefile 的 install 段等价组装。
 
-# 触发策略：**只有版本号变化才编译**。
-#   日常提交（前端/文档/后端代码）不触发任何构建 —— 每次 push 都编译既慢又费额度，
-#   而版本号没变的产物与上一次完全相同。
-#   版本号在 Makefile 的 PKG_VERSION / PKG_RELEASE 里，所以用 paths 先粗筛，
-#   再由 gate job 精确比对「这次提交是否真的改了版本号」。
-#   发布时打 tag（v0.5.0）或手动 workflow_dispatch 可直接放行。
 on:
   push:
     branches: [ main ]
@@ -32,6 +29,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_TARGET: aarch64-unknown-linux-musl
+  PKG_ARCH: aarch64_cortex-a53
 
 jobs:
   gate:
@@ -54,7 +53,6 @@ jobs:
           now="${cur}-r${rel}"
           echo "version=${now}" >> "$GITHUB_OUTPUT"
 
-          # 手动触发与 tag：无条件放行（发布、重跑、验证 CI 本身）
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.ref_type }}" = "tag" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "手动触发或 tag → 放行（${now}）"
@@ -129,29 +127,21 @@ jobs:
       - name: 单元与集成测试
         run: cargo test --locked
 
-  rust-build:
-    name: 交叉编译 ${{ matrix.target }}
+  apk:
+    name: APK（aarch64_cortex-a53）
     needs: gate
     if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: aarch64-unknown-linux-musl
-            note: arm64（mediatek/filogic 等主流路由）
-          - target: x86_64-unknown-linux-musl
-            note: x86_64（软路由 / 虚拟机）
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ env.RUST_TARGET }}
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: ${{ env.RUST_TARGET }}
 
       - uses: taiki-e/install-action@v2
         with:
@@ -165,12 +155,12 @@ jobs:
           echo "/tmp/zig-linux-x86_64-${ZIG_VERSION}" >> "$GITHUB_PATH"
           /tmp/zig-linux-x86_64-${ZIG_VERSION}/zig version
 
-      - name: 编译（release，静态 musl）
+      - name: 交叉编译目标（${{ env.RUST_TARGET }}）
         run: |
-          cargo zigbuild --release --locked --target ${{ matrix.target }}
-          BIN="target/${{ matrix.target }}/release/smartmwand"
+          cargo zigbuild --release --locked --target "$RUST_TARGET"
+          BIN="target/$RUST_TARGET/release/smartmwand"
           file "$BIN"
-          # 静态链接校验：OpenWrt 是 musl 环境，动态依赖 glibc 的二进制跑不起来。
+          # OpenWrt 是 musl 环境：有 NEEDED 说明链到了 glibc，装上去也跑不起来。
           if readelf -d "$BIN" | grep -q NEEDED; then
             echo "::error::产物存在动态依赖，OpenWrt 上无法运行"
             readelf -d "$BIN"
@@ -178,18 +168,59 @@ jobs:
           fi
           echo "已确认静态链接（无 NEEDED 条目）"
 
-      - name: 冒烟（目标架构不可直跑，仅校验 ELF 头与体积）
+      - name: 本机编译（仅用于生成默认配置与 nft 片段）
         run: |
-          BIN="target/${{ matrix.target }}/release/smartmwand"
-          readelf -h "$BIN" | grep -E 'Class|Machine|Type'
-          SIZE=$(stat -c%s "$BIN")
-          echo "大小 $((SIZE / 1024)) KiB"
-          test "$SIZE" -gt 500000 || { echo "::error::二进制过小，疑似构建异常"; exit 1; }
+          # --dump-defaults / --dump-include 输出纯文本，与架构无关；
+          # 交叉产物在 x86 runner 上跑不了，所以用一份本机二进制来生成。
+          cargo build --release --locked
+          ./target/release/smartmwand --help 2>&1 | head -5 || true
 
-      - name: 上传二进制
+      - name: 取 OpenWrt SDK 的 apk 打包工具
+        run: |
+          set -euo pipefail
+          BASE="https://downloads.openwrt.org/snapshots/targets/mediatek/filogic/"
+          SDK=$(curl -fsSL "$BASE" | grep -oE 'openwrt-sdk-[^"]*Linux-x86_64\.tar\.zst' | head -1)
+          [ -n "$SDK" ] || { echo "::error::目录里没找到 SDK 文件名"; curl -fsSL "$BASE" | head -40; exit 1; }
+          echo "SDK 文件：$SDK"
+
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zstd
+          curl -fsSL "$BASE$SDK" -o /tmp/sdk.tar.zst
+          mkdir -p /tmp/sdk
+          tar --zstd -xf /tmp/sdk.tar.zst -C /tmp/sdk --strip-components=1
+
+          APK_TOOL=$(find /tmp/sdk/staging_dir/host/bin -maxdepth 1 -name apk -type f | head -1)
+          [ -n "$APK_TOOL" ] || { echo "::error::SDK 里没有 apk 工具"; ls -la /tmp/sdk/staging_dir/host/bin | head -30; exit 1; }
+          echo "APK_TOOL=$APK_TOOL" >> "$GITHUB_ENV"
+          "$APK_TOOL" --version
+
+      - name: 打包 APK
+        run: |
+          chmod +x scripts/build-apk.sh
+          APK_TOOL="$APK_TOOL" scripts/build-apk.sh \
+            "target/$RUST_TARGET/release/smartmwand" \
+            "target/release/smartmwand" \
+            dist "$PKG_ARCH"
+          ls -la dist/
+
+      - name: 校验 APK 内容
+        run: |
+          set -euo pipefail
+          PKG=$(ls dist/*.apk | head -1)
+          file "$PKG"
+          echo "--- 包内条目（前 30）---"
+          tar -tzf "$PKG" | head -30
+          echo "--- 关键路径必须存在 ---"
+          for p in usr/bin/smartmwand etc/config/smartmwan www/luci-static/resources/smartmwan.js \
+                   www/luci-static/resources/smwcore.js usr/share/rpcd/ucode/smartmwan.uc; do
+            tar -tzf "$PKG" | grep -qx "$p" || { echo "::error::包内缺少 $p"; exit 1; }
+          done
+          echo "关键路径齐全"
+
+      - name: 上传 APK
         uses: actions/upload-artifact@v4
         with:
-          name: smartmwand-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/smartmwand
+          name: luci-app-smartmwan-${{ needs.gate.outputs.version }}-${{ env.PKG_ARCH }}
+          path: dist/*.apk
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30

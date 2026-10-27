@@ -8,3 +8,6 @@ openwrt/sdk*
 .DS_Store
 *.orig
 *.rej
+
+# 打包产物（scripts/build-apk.sh 的输出，不入库）
+dist/
