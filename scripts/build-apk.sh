@@ -59,7 +59,17 @@ for f in "$BIN_TARGET" "$BIN_HOST"; do
 done
 
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
+# chown 成 root 之后普通 rm 删不掉，清理必须跟着提权；否则 CI 里会留一堆临时目录。
+cleanup() {
+	if [ "$(id -u)" = "0" ]; then
+		rm -rf "$WORK"
+	elif can_sudo; then
+		sudo rm -rf "$WORK"
+	else
+		rm -rf "$WORK" 2>/dev/null || true
+	fi
+}
+trap cleanup EXIT
 IDIR="$WORK/$NAME"
 
 echo "==> 组装文件树（$NAME $FULL_VERSION, $ARCH）"
@@ -113,8 +123,11 @@ PKG="$OUT/$NAME-$FULL_VERSION.apk"
 
 # 组装完成后再改属主：先 chown 会让后续的 install/cp 又变回当前用户。
 if [ "$(id -u)" != "0" ] && can_sudo; then
-	sudo chown -R 0:0 "$WORK"
-	echo "==> 文件属主已修正为 root:root"
+	# 只改内容树的属主；$WORK 本身保持在当前用户手里（要能遍历、能删）。
+	sudo chown -R 0:0 "$IDIR"
+	sudo chmod -R u=rwX,go=rX "$IDIR"
+	chmod 0755 "$WORK"
+	echo "==> 文件属主已修正为 root:root（权限 0755/0644）"
 elif [ "$(id -u)" = "0" ]; then
 	echo "==> 以 root 运行，文件属主已是 root:root"
 else
