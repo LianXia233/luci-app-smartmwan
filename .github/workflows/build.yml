@@ -175,41 +175,37 @@ jobs:
           cargo build --release --locked
           ./target/release/smartmwand --help 2>&1 | head -5 || true
 
-      - name: 缓存 apk 打包工具（SDK 里的 host 工具，300MB 下载只做一次）
-        id: apkcache
-        uses: actions/cache@v4
-        with:
-          path: /tmp/apidir
-          key: apk-tool-openwrt-snapshot-v1
-
       - name: 取 OpenWrt SDK 的 apk 打包工具
         run: |
           set -euo pipefail
-          mkdir -p /tmp/apidir
-          if [ -x /tmp/apidir/apk ]; then
-            echo "命中缓存：$(/tmp/apidir/apk --version)"
-          else
-            BASE="https://downloads.openwrt.org/snapshots/targets/mediatek/filogic/"
-            SDK=$(curl -fsSL "$BASE" | grep -oE 'openwrt-sdk-[^"]*Linux-x86_64\.tar\.zst' | head -1)
-            [ -n "$SDK" ] || { echo "::error::目录里没找到 SDK 文件名"; curl -fsSL "$BASE" | head -40; exit 1; }
-            echo "SDK 文件：$SDK"
+          # 注意：SDK 里的 `apk` 是一个包装脚本，靠同级的 ../lib/ld-linux 起自己的
+          # 动态加载器（`${0%/*}/../lib/ld-linux-*.so.2 --library-path ...`）。
+          # 只复制 apk 这一个文件会得到 "No such file or directory"（退出码 127），
+          # 所以这里保留整个 SDK 目录，不做单文件缓存。
+          BASE="https://downloads.openwrt.org/snapshots/targets/mediatek/filogic/"
+          SDK=$(curl -fsSL "$BASE" | grep -oE 'openwrt-sdk-[^"]*Linux-x86_64\.tar\.zst' | head -1)
+          [ -n "$SDK" ] || { echo "::error::目录里没找到 SDK 文件名"; curl -fsSL "$BASE" | head -40; exit 1; }
+          echo "SDK 文件：$SDK"
 
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq zstd fakeroot
-            curl -fsSL "$BASE$SDK" -o /tmp/sdk.tar.zst
-            mkdir -p /tmp/sdk
-            tar --zstd -xf /tmp/sdk.tar.zst -C /tmp/sdk --strip-components=1
-            SRC=$(find /tmp/sdk/staging_dir/host/bin -maxdepth 1 -name apk -type f | head -1)
-            [ -n "$SRC" ] || { echo "::error::SDK 里没有 apk 工具"; ls -la /tmp/sdk/staging_dir/host/bin | head -30; exit 1; }
-            cp "$SRC" /tmp/apidir/apk
-            echo "已缓存：$(/tmp/apidir/apk --version)"
-          fi
-          echo "APK_TOOL=/tmp/apidir/apk" >> "$GITHUB_ENV"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zstd fakeroot
+          curl -fsSL "$BASE$SDK" -o /tmp/sdk.tar.zst
+          mkdir -p /tmp/sdk
+          tar --zstd -xf /tmp/sdk.tar.zst -C /tmp/sdk --strip-components=1
+
+          APK_TOOL=$(find /tmp/sdk/staging_dir/host/bin -maxdepth 1 -name apk -type f | head -1)
+          [ -n "$APK_TOOL" ] || { echo "::error::SDK 里没有 apk 工具"; ls -la /tmp/sdk/staging_dir/host/bin | head -30; exit 1; }
+          echo "APK_TOOL=$APK_TOOL" >> "$GITHUB_ENV"
+          "$APK_TOOL" --version
 
       - name: 打包 APK
         run: |
           # fakeroot：让包内文件属主记录为 root:root（否则是 runner，装到路由器上 uid 是 1001）
-          sudo apt-get install -y -qq fakeroot
+          command -v fakeroot >/dev/null 2>&1 || {
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq fakeroot
+          }
+          fakeroot -- true && echo "fakeroot 可用"
           chmod +x scripts/build-apk.sh
           APK_TOOL="$APK_TOOL" scripts/build-apk.sh \
             "target/$RUST_TARGET/release/smartmwand" \
