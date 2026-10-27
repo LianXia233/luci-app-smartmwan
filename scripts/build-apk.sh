@@ -24,10 +24,19 @@ set -eu
 
 # ---- 属主修正 ----------------------------------------------------------------
 # apk 会记录文件的实际 uid/gid。CI 里文件由 runner 用户创建，直接打包会得到
-# 「装到路由器上属主是 1001」这种坏包。OpenWrt 的 Makefile 用 $(FAKEROOT) 解决，
-# 这里同样处理：非 root 且装了 fakeroot 时，整个组装过程在 fakeroot 里重跑一遍
-# （install/mkdir 的属主记录因此是 root，而文件本身不需要真实 chown）。
-if [ "$(id -u)" != "0" ] && [ -z "${SMW_NO_FAKEROOT:-}" ] && command -v fakeroot >/dev/null 2>&1; then
+# 「装到路由器上属主是 1001」这种坏包。
+#
+# 实测（GitHub Actions, ubuntu-24.04）：fakeroot 在这里**不生效** —— 它靠
+# LD_PRELOAD 拦截 stat/lstat，而 SDK 自带的是 apk 包装脚本 + 自己的 ld-linux，
+# 那个 ld-linux 加载不到系统的 libfakeroot.so，属主照样是 runner。
+# 所以顺序改成：能 sudo 就直接 chown 成 root（最可靠）；不能 sudo 才退回 fakeroot。
+can_sudo() {
+	[ "$(id -u)" = "0" ] && return 0
+	command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null
+}
+
+if [ "$(id -u)" != "0" ] && ! can_sudo && [ -z "${SMW_NO_FAKEROOT:-}" ] \
+	&& command -v fakeroot >/dev/null 2>&1; then
 	exec fakeroot -- "$0" "$@"
 fi
 
@@ -101,6 +110,16 @@ echo "    共 $COUNT 个文件，$(du -sk "$IDIR" | cut -f1) KiB"
 
 mkdir -p "$OUT"
 PKG="$OUT/$NAME-$FULL_VERSION.apk"
+
+# 组装完成后再改属主：先 chown 会让后续的 install/cp 又变回当前用户。
+if [ "$(id -u)" != "0" ] && can_sudo; then
+	sudo chown -R 0:0 "$WORK"
+	echo "==> 文件属主已修正为 root:root"
+elif [ "$(id -u)" = "0" ]; then
+	echo "==> 以 root 运行，文件属主已是 root:root"
+else
+	echo "!! 警告：无法 chown（无 sudo、无 fakeroot），包内属主会保留为当前用户" >&2
+fi
 
 echo "==> 打包（$APK_TOOL mkpkg）"
 # SOURCE_DATE_EPOCH=0：与 OpenWrt 一致，固定时间戳让同一份输入产出同一个包。
