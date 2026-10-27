@@ -207,15 +207,28 @@ jobs:
         run: |
           set -euo pipefail
           PKG=$(ls dist/*.apk | head -1)
-          file "$PKG"
-          echo "--- 包内条目（前 30）---"
-          tar -tzf "$PKG" | head -30
-          echo "--- 关键路径必须存在 ---"
-          for p in usr/bin/smartmwand etc/config/smartmwan www/luci-static/resources/smartmwan.js \
-                   www/luci-static/resources/smwcore.js usr/share/rpcd/ucode/smartmwan.uc; do
-            tar -tzf "$PKG" | grep -qx "$p" || { echo "::error::包内缺少 $p"; exit 1; }
+          echo "--- 头部魔数（APKv3 是 ADB 格式，不是 gzip tar，所以不能用 tar 解）---"
+          head -c 12 "$PKG" | od -An -c
+
+          echo "--- adbdump 摘要（前 30 行）---"
+          "$APK_TOOL" adbdump "$PKG" | head -30
+
+          echo "--- 文件清单 ---"
+          # 未签名包：优先带 --allow-untrusted，个别版本不支持就退回不带参数的调用。
+          MANIFEST=$("$APK_TOOL" manifest --allow-untrusted "$PKG" 2>/dev/null \
+                     || "$APK_TOOL" manifest "$PKG" \
+                     || "$APK_TOOL" adbdump "$PKG")
+          echo "$MANIFEST" | head -25
+
+          echo "--- 关键文件必须存在 ---"
+          for f in smartmwand smartmwan.js smwcore.js smwform.js smartmwan.uc smartmwan.nft smartmwan.css; do
+            if ! echo "$MANIFEST" | grep -q "$f"; then
+              echo "::error::包内缺少 $f"
+              exit 1
+            fi
+            echo "  ok $f"
           done
-          echo "关键路径齐全"
+          echo "共 $(echo "$MANIFEST" | wc -l) 行清单"
 
       - name: 上传 APK
         uses: actions/upload-artifact@v4
