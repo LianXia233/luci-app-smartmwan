@@ -1,0 +1,195 @@
+name: build
+
+# 编译策略（刻意不用 OpenWrt SDK）：
+#   OpenWrt SDK 的 `make package/.../compile` 会拉起整套 OpenWrt 构建系统
+#   （feeds 更新 + 工具链 + 上千个包的 Makefile 解析），单次 15 分钟起，
+#   而本包的 Rust 部分本来就只是一个普通的 musl 静态二进制。
+#   所以这里直接用 Rust 工具链交叉编译：rustup target + cargo，C 运行时
+#   由 Zig 自带（cargo-zigbuild），产物是静态链接的 musl 可执行文件，
+#   与 SDK 里用 TARGET_CC 链接出来的结果一致。
+#   安装包（apk/ipk）仍由 Makefile 在 SDK 环境下产出，不在 CI 里做。
+
+# 触发策略：**只有版本号变化才编译**。
+#   日常提交（前端/文档/后端代码）不触发任何构建 —— 每次 push 都编译既慢又费额度，
+#   而版本号没变的产物与上一次完全相同。
+#   版本号在 Makefile 的 PKG_VERSION / PKG_RELEASE 里，所以用 paths 先粗筛，
+#   再由 gate job 精确比对「这次提交是否真的改了版本号」。
+#   发布时打 tag（v0.5.0）或手动 workflow_dispatch 可直接放行。
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'Makefile'
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gate:
+    name: 版本门禁
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2        # 需要 HEAD^ 里的 Makefile 做比对
+
+      - id: check
+        name: 比对 PKG_VERSION / PKG_RELEASE
+        run: |
+          set -euo pipefail
+          cur=$(sed -n 's/^PKG_VERSION:=//p' Makefile | tr -d '[:space:]')
+          rel=$(sed -n 's/^PKG_RELEASE:=//p' Makefile | tr -d '[:space:]')
+          now="${cur}-r${rel}"
+          echo "version=${now}" >> "$GITHUB_OUTPUT"
+
+          # 手动触发与 tag：无条件放行（发布、重跑、验证 CI 本身）
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "手动触发或 tag → 放行（${now}）"
+            exit 0
+          fi
+
+          prev="-"
+          if git rev-parse --verify --quiet 'HEAD^' >/dev/null; then
+            pv=$(git show 'HEAD^:Makefile' | sed -n 's/^PKG_VERSION:=//p' | tr -d '[:space:]' || true)
+            pr=$(git show 'HEAD^:Makefile' | sed -n 's/^PKG_RELEASE:=//p' | tr -d '[:space:]' || true)
+            [ -n "$pv" ] && prev="${pv}-r${pr}"
+          fi
+
+          if [ "$prev" != "$now" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "版本变化 ${prev} → ${now} → 放行"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::版本未变化（${now}），本次不编译。发布请提升 PKG_VERSION 或打 tag。"
+          fi
+
+  frontend:
+    name: 前端（语法 / 组件冒烟 / 零 Lua）
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 语法检查（node --check）
+        run: |
+          set -e
+          shopt -s nullglob
+          for f in htdocs/luci-static/resources/smw*.js \
+                   htdocs/luci-static/resources/smartmwan.js \
+                   htdocs/luci-static/resources/view/smartmwan/*.js \
+                   scripts/*.js; do
+            node --check "$f"
+            echo "ok $f"
+          done
+
+      - name: 组件与视图冒烟（194 项）
+        run: node scripts/ui-smoke.js
+
+      - name: 零 Lua 扫描
+        run: ./scripts/no-lua-check.sh --verbose
+
+  rust-lint:
+    name: Rust 静态检查（fmt / clippy / test）
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 格式
+        run: cargo fmt --all --check
+
+      - name: Clippy（警告即错误）
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: 单元与集成测试
+        run: cargo test --locked
+
+  rust-build:
+    name: 交叉编译 ${{ matrix.target }}
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-musl
+            note: arm64（mediatek/filogic 等主流路由）
+          - target: x86_64-unknown-linux-musl
+            note: x86_64（软路由 / 虚拟机）
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - name: 安装 Zig（提供 musl 交叉 C 运行时）
+        run: |
+          ZIG_VERSION=0.13.0
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz
+          tar -xJf /tmp/zig.tar.xz -C /tmp
+          echo "/tmp/zig-linux-x86_64-${ZIG_VERSION}" >> "$GITHUB_PATH"
+          /tmp/zig-linux-x86_64-${ZIG_VERSION}/zig version
+
+      - name: 编译（release，静态 musl）
+        run: |
+          cargo zigbuild --release --locked --target ${{ matrix.target }}
+          BIN="target/${{ matrix.target }}/release/smartmwand"
+          file "$BIN"
+          # 静态链接校验：OpenWrt 是 musl 环境，动态依赖 glibc 的二进制跑不起来。
+          if readelf -d "$BIN" | grep -q NEEDED; then
+            echo "::error::产物存在动态依赖，OpenWrt 上无法运行"
+            readelf -d "$BIN"
+            exit 1
+          fi
+          echo "已确认静态链接（无 NEEDED 条目）"
+
+      - name: 冒烟（目标架构不可直跑，仅校验 ELF 头与体积）
+        run: |
+          BIN="target/${{ matrix.target }}/release/smartmwand"
+          readelf -h "$BIN" | grep -E 'Class|Machine|Type'
+          SIZE=$(stat -c%s "$BIN")
+          echo "大小 $((SIZE / 1024)) KiB"
+          test "$SIZE" -gt 500000 || { echo "::error::二进制过小，疑似构建异常"; exit 1; }
+
+      - name: 上传二进制
+        uses: actions/upload-artifact@v4
+        with:
+          name: smartmwand-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/smartmwand
+          if-no-files-found: error
+          retention-days: 14
