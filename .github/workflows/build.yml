@@ -11,6 +11,10 @@ name: build
 #     普通 musl 静态二进制，产物等价；
 #   * APK 打包只借 SDK 里的 `apk mkpkg` 工具（不是编译器），文件树由
 #     scripts/build-apk.sh 按 Makefile 的 install 段等价组装。
+#
+# 发布策略：**打包成功即发 Release**（不用手动去点）。
+#   tag 用 v<PKG_VERSION>（如 v0.5.0），标题带 -r<PKG_RELEASE>；
+#   同名 Release 已存在时用 --clobber 覆盖附件（重新打包不会失败）。
 
 on:
   push:
@@ -247,3 +251,84 @@ jobs:
           path: dist/*.apk
           if-no-files-found: error
           retention-days: 30
+
+  release:
+    name: 发布 Release
+    needs: [ gate, apk ]
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write        # 创建 tag / Release 需要写权限（其余 job 仍是只读）
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 取回 APK
+        uses: actions/download-artifact@v4
+        with:
+          name: luci-app-smartmwan-${{ needs.gate.outputs.version }}-aarch64_cortex-a53
+          path: dist
+
+      - name: 组织发布说明（CHANGELOG 对应段落 + 安装说明）
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.gate.outputs.version }}"     # 0.5.0-r1
+          VERSION_BASE="${VERSION%%-r*}"                  # 0.5.0
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "VERSION_BASE=$VERSION_BASE" >> "$GITHUB_ENV"
+          echo "TAG=v${VERSION_BASE}" >> "$GITHUB_ENV"
+
+          NOTES=release-notes.md
+          {
+            echo "## 安装"
+            echo
+            echo '```sh'
+            echo "apk add --allow-untrusted luci-app-smartmwan-${VERSION}.apk"
+            echo '```'
+            echo
+            echo "- 架构：\`aarch64_cortex-a53\`（mediatek/filogic、ipq807x 等 ARM64 路由）"
+            echo "- 依赖：firewall4、nftables、luci-base、rpcd、ucode-mod-socket"
+            echo "- 未签名包：安装时必须带 \`--allow-untrusted\`"
+            echo "- 首次安装 \`enabled=0\`，不会改动现有路由；在「网络 → 智能多线路」里手动启用"
+            echo
+            echo "## 变更"
+            echo
+          } > "$NOTES"
+
+          # 摘出 CHANGELOG 里本版本的段落（## [0.5.0] 到下一个 ## [ 之间）
+          awk -v ver="$VERSION_BASE" '
+            index($0, "## [" ver "]") == 1 { flag = 1; next }
+            /^## \[/ { flag = 0 }
+            flag' CHANGELOG.md >> "$NOTES" || true
+
+          if ! grep -q . "$NOTES"; then
+            echo "（本版本暂无独立条目，见 CHANGELOG.md）" >> "$NOTES"
+          fi
+          echo "--- 发布说明预览 ---"
+          head -40 "$NOTES"
+
+      - name: 创建或更新 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ls -la dist/
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在 → 覆盖附件"
+            gh release upload "$TAG" dist/*.apk --clobber
+            gh release edit "$TAG" --notes-file release-notes.md
+          else
+            echo "创建 Release $TAG"
+            gh release create "$TAG" dist/*.apk \
+              --title "luci-app-smartmwan ${VERSION}" \
+              --notes-file release-notes.md \
+              --latest
+          fi
+
+      - name: 完成信息
+        run: |
+          echo "发布地址：${{ github.server_url }}/${{ github.repository }}/releases/tag/${TAG}"
+          gh release view "${TAG}" --json tagName,name,assets \
+            --jq '.tagName + " | " + .name + " | 附件：" + ([.assets[].name] | join(", "))' \
+            --repo "${{ github.repository }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
