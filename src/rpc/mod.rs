@@ -1293,6 +1293,26 @@ async fn h_diff(st: &AppState) -> Result<Value> {
 
 // ==================== 写方法 ====================
 
+/// 把新配置放进共享槽，并复位调度器里带旧配置语义的状态。
+///
+/// 所有改配置的写方法都必须走这里，而不是各自「写槽 + 同步追踪器」：
+/// 只换配置而不复位去抖，会让旧配置的失败计数/重排计时延续到新配置上，
+/// 出现「刚改了主线路却还在沿用上一次的切换计时」这类错判；
+/// 被删掉的游戏规则也要清理选路状态，否则长期运行会留下垃圾条目。
+fn adopt_config(st: &AppState, old: &Config, new: Config) {
+    {
+        let mut g = st.scheduler.lock().unwrap_or_else(|p| p.into_inner());
+        for rule in &old.games {
+            if !new.games.iter().any(|n| n.name == rule.name) {
+                g.forget_rule(&rule.name);
+            }
+        }
+        g.on_config_change();
+    }
+    *write_lock(&st.cfg) = Arc::new(new);
+    st.registry.sync_config(&st.cfg_snapshot());
+}
+
 /// 保存配置（写盘，**不下发**）。返回校验报告与相对上一版的差异。
 async fn h_save(st: &AppState, params: &Value, caller: Caller) -> Result<Value> {
     let cfg = param_config(params)?;
@@ -1300,9 +1320,8 @@ async fn h_save(st: &AppState, params: &Value, caller: Caller) -> Result<Value> 
     let report = store.save(&cfg)?;
     let old = st.cfg_snapshot();
     let changes = config::diff(&old, &cfg);
-    // 两处同改：共享配置与健康追踪器阈值；主循环下一轮自然看到新配置。
-    *write_lock(&st.cfg) = Arc::new(cfg.clone());
-    st.registry.sync_config(&cfg);
+    // 共享配置、健康追踪器阈值、调度器去抖状态三处同步更新；主循环下一轮自然看到新配置。
+    adopt_config(st, &old, cfg);
     logging::info_ctx(
         "config",
         "save",
@@ -1351,8 +1370,8 @@ async fn h_rollback(st: &AppState) -> Result<Value> {
     // 回滚要让磁盘与内核一致：否则下次 reload 会把回滚成果覆盖掉。
     let mut store = ConfigStore::load(&st.paths.config)?;
     store.save(&cfg)?;
-    *write_lock(&st.cfg) = Arc::new(cfg);
-    st.registry.sync_config(&st.cfg_snapshot());
+    let old = st.cfg_snapshot();
+    adopt_config(st, &old, cfg);
     let (tx, rx) = oneshot::channel();
     st.ctl
         .send(Command::Cycle(tx))
@@ -1410,7 +1429,8 @@ async fn h_set_maintenance(st: &AppState, params: &Value, caller: Caller) -> Res
     let wan = param_str(params, "wan")?;
     let on = param_bool(params, "on", true);
     // Arc<Config> 不能就地改：取出一份可改副本，保存成功后再替换共享槽。
-    let mut cfg: Config = (*st.cfg_snapshot()).clone();
+    let old = st.cfg_snapshot();
+    let mut cfg: Config = (*old).clone();
     {
         let w = cfg
             .wan_mut(wan)
@@ -1419,8 +1439,7 @@ async fn h_set_maintenance(st: &AppState, params: &Value, caller: Caller) -> Res
     }
     let mut store = ConfigStore::load(&st.paths.config)?;
     store.save(&cfg)?;
-    *write_lock(&st.cfg) = Arc::new(cfg);
-    st.registry.sync_config(&st.cfg_snapshot());
+    adopt_config(st, &old, cfg);
     logging::info_ctx(
         "rpc",
         "setMaintenance",
@@ -1518,7 +1537,8 @@ async fn mutate_global<F>(st: &AppState, caller: Caller, op: &str, f: F) -> Resu
 where
     F: FnOnce(&mut config::schema::GlobalConfig) -> Result<Option<String>>,
 {
-    let mut cfg: Config = (*st.cfg_snapshot()).clone();
+    let old = st.cfg_snapshot();
+    let mut cfg: Config = (*old).clone();
     let Some(change) = f(&mut cfg.global)? else {
         return Ok(json!({
             "saved": false,
@@ -1528,8 +1548,7 @@ where
     };
     let mut store = ConfigStore::load(&st.paths.config)?;
     let report = store.save(&cfg)?;
-    *write_lock(&st.cfg) = Arc::new(cfg);
-    st.registry.sync_config(&st.cfg_snapshot());
+    adopt_config(st, &old, cfg);
     logging::info_ctx(
         "rpc",
         op,

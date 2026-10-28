@@ -15,6 +15,33 @@
   等价组装（含 apk 需要的 `.list`/`.conffiles`/`.conffiles_static`，属主 chown 成 root）。
   打包成功后自动创建 GitHub Release（tag `v<PKG_VERSION>`，同名则覆盖附件）。
 
+### 修复
+
+* **日志时间戳在西半球偏几小时**（`src/logging.rs`）：时区偏移缓存量原为无符号，
+  负的 `tm_gmtoff` 被吞成 0，整机日志按 UTC 记时；改为有符号 `AtomicI64` 并保留负值。
+* **CLI 选项缺值被静默忽略**（`src/main.rs`）：`--log-level` / `--log-file` 后面没跟值
+  （或直接跟了另一个选项）时原本悄悄变成 `None`，笔误不报错；现在明确报
+  「需要一个参数值」。
+* **决策失败可能清空数据面**（`src/main.rs`）：原实现在决策出错时返回空决策，
+  下一轮提交会用空桶图覆盖已生效的分流；现在 `decide()` 返回 `Result`，失败时
+  只生成 `ok=false` 回执并明说「未向内核写入任何内容」，内核保持上一轮规则。
+* **RPC 写方法改配置时未复位调度器**（`src/rpc/mod.rs`）：`save` / `rollback` /
+  `setMaintenance` / 改全局字段四条路径原先只替换配置并同步注册表，跳过了
+  `on_config_change()` 与已删除规则的清理，与新配置的去抖计时不一致；现统一走
+  `adopt_config()`，与 `reload()` 同一条路径。
+* **包元数据与包内容架构矛盾**（`Makefile`）：`PKGARCH:=all` 与包内按目标架构编译的
+  `smartmwand` 冲突（aarch64 包会被装到 mipsel 上直接无法执行）；已移除，回到
+  SDK 目标架构。
+* **CI 发布说明与产物名硬编码**（`.github/workflows/build.yml`）：Release 已按
+  `${{ env.PKG_ARCH }}` 取产物、写架构行；发布说明的「空段落」检测原先永远判非空
+  （安装说明本身就非空），现先摘到独立文件再判。
+
+### 文档
+
+* 全仓数字与状态按本轮实测重测：392 lib + 2 bin + 33 集成测试、RPC 29 方法；
+  `docs/PROGRESS.md` §9.1、`docs/TESTING.md` §6、`docs/HANDOVER.md`、
+  `docs/ROADMAP.md` M10 的过期表述已更正，`tests/` 集成测试状态由「未写」改为已落地。
+
 ## [0.5.0] — 2026-10-27
 
 首个可运行的完整版本：后端七层 + 守护进程 + 前端组件系统 + 打包。
@@ -23,7 +50,7 @@
 ### 新增
 
 * **仓库与构建基线**：`Cargo.toml`（1 库 + 1 守护进程二进制）、`Cargo.lock`、
-  `LICENSE`（GPL-2.0-or-later 全文）、`.gitignore`。依赖刻意最小化：
+  `LICENSE`（GPL-3.0-or-later 全文；初版为 GPLv2，2026-10-26 按所有者指示升级，见「变更」）、`.gitignore`。依赖刻意最小化：
   tokio / libc / serde / serde_json / thiserror，并在清单里逐条写明「不引入
   ubus / rtnetlink / conntrack / libuci FFI」的原因。
 * **配置层 `src/config`**：原生 UCI 文本解析与序列化（不依赖 libuci）、

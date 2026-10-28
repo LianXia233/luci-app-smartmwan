@@ -121,8 +121,8 @@ fn parse_args() -> Result<Cli> {
             "--print-config" => cli.print_config = true,
             "--restore-last-good" => cli.restore_last_good = true,
             "--reclaim" => cli.reclaim = true,
-            "--log-level" => cli.log_level = args.next(),
-            "--log-file" => cli.log_file = args.next(),
+            "--log-level" => cli.log_level = Some(value_arg(&mut args, "--log-level")?),
+            "--log-file" => cli.log_file = Some(value_arg(&mut args, "--log-file")?),
             "-h" | "--help" => {
                 print!("{HELP}");
                 std::process::exit(0);
@@ -138,9 +138,16 @@ fn parse_args() -> Result<Cli> {
 }
 
 fn path_arg(args: &mut std::iter::Skip<std::env::Args>, flag: &str) -> Result<PathBuf> {
-    args.next()
-        .map(PathBuf::from)
-        .ok_or_else(|| Error::Validate(format!("{flag} 需要一个路径参数")))
+    Ok(PathBuf::from(value_arg(args, flag)?))
+}
+
+/// 取一个选项值。缺值（或下一个参数本身就是另一个选项）必须报错，
+/// 不能静默当成 `None` —— 那会让 `--log-level --once` 这类笔误悄悄失效。
+fn value_arg(args: &mut std::iter::Skip<std::env::Args>, flag: &str) -> Result<String> {
+    match args.next() {
+        Some(v) if !v.starts_with("--") => Ok(v),
+        _ => Err(Error::Validate(format!("{flag} 需要一个参数值"))),
+    }
 }
 
 const HELP: &str = "\
@@ -1052,7 +1059,10 @@ impl Daemon {
     // ---------- 决策与下发 ----------
 
     /// 一轮决策。代际在桶图变化时递增（它进程序文本，无谓递增等于无谓重写）。
-    async fn decide(&mut self, cfg: &Config, now: u64) -> Decision {
+    ///
+    /// 失败必须返回 `Err` 而不是一份空决策：空桶图提交下去等于把内核里的
+    /// 分流规则全部清掉（线路明明可用却瞬间失联）。
+    async fn decide(&mut self, cfg: &Config, now: u64) -> Result<Decision> {
         let snap = self
             .st
             .snap
@@ -1064,10 +1074,7 @@ impl Daemon {
 
         let slots = match scheduler::slot_map(cfg) {
             Ok(s) => s,
-            Err(e) => {
-                logging::error_ctx("scheduler", "slots", e, &[]);
-                return Decision::default();
-            }
+            Err(e) => return Err(logging::error_ctx("scheduler", "slots", e, &[])),
         };
         let mut g = self.st.scheduler.lock().unwrap_or_else(|p| p.into_inner());
         // 游戏择优与决策在同一把锁里完成：保证「显示的排名」与「下发的落点」同源。
@@ -1099,12 +1106,9 @@ impl Daemon {
                 };
                 *self.st.outcome.write().unwrap_or_else(|p| p.into_inner()) = Some(outcome);
                 *self.st.decision.write().unwrap_or_else(|p| p.into_inner()) = decision.clone();
-                decision
+                Ok(decision)
             }
-            Err(e) => {
-                logging::error_ctx("scheduler", "decide", e, &[]);
-                Decision::default()
-            }
+            Err(e) => Err(logging::error_ctx("scheduler", "decide", e, &[])),
         }
     }
 
@@ -1177,7 +1181,12 @@ impl Daemon {
     /// 一轮「决策 + 按需下发」。`force` = RPC 显式触发（即使无变更也提交一次，
     /// 让回执如实反映复核结论）。`None` = 无需任何写入。
     async fn cycle(&mut self, cfg: &Config, now: u64, force: bool) -> Option<Receipt> {
-        let decision = self.decide(cfg, now).await;
+        let decision = match self.decide(cfg, now).await {
+            Ok(d) => d,
+            // 决策失败绝不下发：宁可保持内核现状（旧规则仍然有效），
+            // 也不能提交一份空桶图把分流清空。
+            Err(e) => return Some(self.failed_receipt(&e)),
+        };
         let fp = config::fingerprint(cfg);
         let cfg_changed = self.last_applied_fp.as_deref() != Some(fp.as_str());
         let outcome_changed = self
@@ -1332,6 +1341,21 @@ impl Daemon {
             error: None,
             firewall: self.st.coordinator.plane().fw.describe(),
         })
+    }
+
+    /// 决策失败的回执：明说「未触碰内核」，并把原因原样带给 RPC/前端。
+    fn failed_receipt(&self, err: &Error) -> Receipt {
+        let rec = Receipt {
+            id: self.st.coordinator.next_transaction_id(),
+            ok: false,
+            changed: false,
+            summary: format!("本轮决策失败，未向内核写入任何内容：{err}"),
+            error: Some(err.to_string()),
+            firewall: self.st.coordinator.plane().fw.describe(),
+            ..Default::default()
+        };
+        *self.st.receipt.write().unwrap_or_else(|p| p.into_inner()) = Some(rec.clone());
+        rec
     }
 
     /// 无变更时的回执（RPC apply 需要一份能显示的回执）。

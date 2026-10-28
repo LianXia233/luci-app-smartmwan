@@ -265,7 +265,7 @@ jobs:
       - name: 取回 APK
         uses: actions/download-artifact@v4
         with:
-          name: luci-app-smartmwan-${{ needs.gate.outputs.version }}-aarch64_cortex-a53
+          name: luci-app-smartmwan-${{ needs.gate.outputs.version }}-${{ env.PKG_ARCH }}
           path: dist
 
       - name: 组织发布说明（CHANGELOG 对应段落 + 安装说明）
@@ -278,6 +278,7 @@ jobs:
           echo "TAG=v${VERSION_BASE}" >> "$GITHUB_ENV"
 
           NOTES=release-notes.md
+          SECTION=release-section.md
           {
             echo "## 安装"
             echo
@@ -285,7 +286,7 @@ jobs:
             echo "apk add --allow-untrusted luci-app-smartmwan-${VERSION}.apk"
             echo '```'
             echo
-            echo "- 架构：\`aarch64_cortex-a53\`（mediatek/filogic、ipq807x 等 ARM64 路由）"
+            echo "- 架构：\`${{ env.PKG_ARCH }}\`（mediatek/filogic、ipq807x 等 ARM64 路由）"
             echo "- 依赖：firewall4、nftables、luci-base、rpcd、ucode-mod-socket"
             echo "- 未签名包：安装时必须带 \`--allow-untrusted\`"
             echo "- 首次安装 \`enabled=0\`，不会改动现有路由；在「网络 → 智能多线路」里手动启用"
@@ -298,9 +299,13 @@ jobs:
           awk -v ver="$VERSION_BASE" '
             index($0, "## [" ver "]") == 1 { flag = 1; next }
             /^## \[/ { flag = 0 }
-            flag' CHANGELOG.md >> "$NOTES" || true
+            flag' CHANGELOG.md > "$SECTION" || true
 
-          if ! grep -q . "$NOTES"; then
+          # 检查的是「摘出来的段落」而不是整份 notes：notes 里永远有安装说明，
+          # 用整份文件判断空段落永远不会命中。
+          if grep -q '[^[:space:]]' "$SECTION"; then
+            cat "$SECTION" >> "$NOTES"
+          else
             echo "（本版本暂无独立条目，见 CHANGELOG.md）" >> "$NOTES"
           fi
           echo "--- 发布说明预览 ---"
