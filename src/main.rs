@@ -670,9 +670,14 @@ struct Daemon {
     shutdown_ctl: Arc<ShutdownCtl>,
     /// 上次成功应用时的配置指纹（`None` = 从未应用）。
     last_applied_fp: Option<String>,
-    /// 上次提交是否成功收敛（热替换的前置条件）。
+    /// 上次成功应用时的游戏择优结果。择优变化改的是游戏规则的标记（槽位位），
+    /// 只替换桶规则会把游戏流量留在旧出口，因此它必须参与「要不要提交 / 能否热替换」的判断。
+    last_picks: BTreeMap<String, u8>,
+    /// 上次提交是否成功收敛（热替换的前置条件，也是失败重试的依据）。
     last_ok: bool,
-    /// 决策代际（4bit，只在桶图变化时递增 —— 否则每次决策都会改写程序）。
+    /// 决策代际（4bit）。只在**完整事务**提交时递增：热替换要求程序文本除桶图外
+    /// 逐字节不变，而 gen 会写进每条游戏规则的标记里。桶图变化时递增 gen 会让
+    /// 游戏规则也跟着变，可热替换只动桶规则 —— 内核与快照就此分叉。
     gen: u8,
     last_probe_ms: u64,
     /// 上次采样游戏规则命中数的时刻（unix 毫秒）；0 = 还没采样过。
@@ -784,6 +789,7 @@ impl Daemon {
             cancel_tx,
             shutdown_ctl,
             last_applied_fp: None,
+            last_picks: BTreeMap::new(),
             last_ok: false,
             gen: 0,
             last_probe_ms: 0,
@@ -1094,10 +1100,7 @@ impl Daemon {
         }
         match g.decide(cfg, &snap, &loads, now) {
             Ok(outcome) => {
-                let changed = outcome.changed;
-                if changed {
-                    self.gen = self.gen.wrapping_add(1) & 0x0F;
-                }
+                // 代际不在这里递增：递增时机见 `apply_decision`（只有完整事务才换代）。
                 let decision = Decision {
                     bucket_map: outcome.buckets.clone(),
                     picks,
@@ -1189,6 +1192,7 @@ impl Daemon {
         };
         let fp = config::fingerprint(cfg);
         let cfg_changed = self.last_applied_fp.as_deref() != Some(fp.as_str());
+        let picks_changed = decision.picks != self.last_picks;
         let outcome_changed = self
             .st
             .outcome
@@ -1197,7 +1201,13 @@ impl Daemon {
             .as_ref()
             .map(|o| o.changed)
             .unwrap_or(false);
-        if !outcome_changed && !cfg_changed && !force {
+        if !needs_submit(
+            force,
+            outcome_changed,
+            cfg_changed,
+            picks_changed,
+            self.last_ok,
+        ) {
             return None;
         }
         if !force && self.next_retry_ms > now {
@@ -1216,16 +1226,17 @@ impl Daemon {
         now: u64,
     ) -> Option<Receipt> {
         let fp = config::fingerprint(cfg);
-        let only_buckets = !force
-            && self.nft.is_some()
-            && self.last_ok
-            && self.last_applied_fp.as_deref() == Some(fp.as_str());
-        if only_buckets {
+        let picks_changed = decision.picks != self.last_picks;
+        let same_config = self.last_applied_fp.as_deref() == Some(fp.as_str());
+        if !force
+            && hot_replace_allowed(self.nft.is_some(), self.last_ok, same_config, picks_changed)
+        {
             match self.hot_replace(cfg, decision).await {
                 Ok(rec) => {
                     *self.st.receipt.write().unwrap_or_else(|p| p.into_inner()) = Some(rec.clone());
                     self.last_ok = true;
                     self.last_applied_fp = Some(fp);
+                    self.last_picks = decision.picks.clone();
                     return Some(rec);
                 }
                 Err(e) => {
@@ -1240,10 +1251,17 @@ impl Daemon {
                 }
             }
         }
-        let receipt = self.st.coordinator.submit(cfg, decision).await;
+        // 完整事务（整表重写）：代际只在这里递增，见 `gen` 字段的说明。
+        let mut applied = decision.clone();
+        self.gen = self.gen.wrapping_add(1) & 0x0F;
+        applied.gen = self.gen;
+        let receipt = self.st.coordinator.submit(cfg, &applied).await;
         self.last_ok = receipt.ok;
         if receipt.ok {
             self.last_applied_fp = Some(fp);
+            self.last_picks = applied.picks.clone();
+            // 让 UI 看到的决策与真正下发的代际一致。
+            *self.st.decision.write().unwrap_or_else(|p| p.into_inner()) = applied;
             self.next_retry_ms = 0;
         } else {
             // 失败进退避：下一个 tick 不再重放，等 SUBMIT_RETRY_BACKOFF_MS。
@@ -1255,8 +1273,10 @@ impl Daemon {
 
     /// 桶轮排热替换：只 `replace rule` 那几条桶映射规则，不重建整表。
     ///
-    /// 前置条件由调用方保证：配置指纹与上次应用一致（⇒ 程序除桶图外逐字节相同）、
-    /// 上次提交成功、nft 通道为 Real。任一不满足都走完整事务。
+    /// 前置条件由调用方保证（见 [`hot_replace_allowed`]）：nft 通道为 Real、
+    /// 上次提交成功、配置指纹与上次应用一致（⇒ 程序除桶图外逐字节相同）、
+    /// **且游戏择优未变**（择优写进游戏规则标记，不在这批要 replace 的桶规则里）。
+    /// 任一不满足都走完整事务。
     async fn hot_replace(&self, cfg: &Config, decision: &Decision) -> Result<Receipt> {
         let nft = self
             .nft
@@ -1369,6 +1389,37 @@ impl Daemon {
             ..Default::default()
         }
     }
+}
+
+// ==================== 下发门控 ====================
+
+/// 本轮是否必须提交。
+///
+/// `last_ok == false` 表示上一次提交失败：此时即使「本轮没有任何新变化」也必须重试。
+/// 否则一次桶图提交失败后，下一轮 `outcome_changed` / `cfg_changed` 都是相对上一轮
+/// **决策**算出来的假，`cycle` 会在退避检查之前提前返回，失败永远不收敛。
+fn needs_submit(
+    force: bool,
+    outcome_changed: bool,
+    cfg_changed: bool,
+    picks_changed: bool,
+    last_ok: bool,
+) -> bool {
+    force || !last_ok || outcome_changed || cfg_changed || picks_changed
+}
+
+/// 能否只做桶规则热替换。
+///
+/// 前提：nft 通道可用、上次提交成功、配置指纹与上次应用一致（⇒ 程序除桶图外逐字节
+/// 相同）、**且游戏择优未变**。择优变化改的是游戏规则的标记（槽位位），而热替换只
+/// `replace` 桶规则 —— 放过去会让游戏流量继续落在旧出口，内核与快照就此分叉。
+fn hot_replace_allowed(
+    has_nft: bool,
+    last_ok: bool,
+    same_config: bool,
+    picks_changed: bool,
+) -> bool {
+    has_nft && last_ok && same_config && !picks_changed
 }
 
 // ==================== 旁路环 ====================
@@ -1570,5 +1621,33 @@ mod tests {
         // 首次安装前的清理：文件不存在时 load() 本身就给默认配置。
         let cfg = load_config_or_default(Path::new("/nonexistent/smartmwan/config"));
         assert_eq!(cfg, Config::default());
+    }
+
+    #[test]
+    fn failed_submit_is_retried_even_without_new_changes() {
+        // 关键回归：桶图提交失败后，下一轮「相对上一轮决策」看起来毫无变化。
+        // 若门控只看变化标志，退避重试永远不可达 —— 一次失败就永久停在不收敛状态。
+        assert!(needs_submit(false, false, false, false, false));
+        // 成功收敛且无变化时不该重放事务。
+        assert!(!needs_submit(false, false, false, false, true));
+        // 三个变化源各自都能单独触发提交。
+        assert!(needs_submit(false, true, false, false, true));
+        assert!(needs_submit(false, false, true, false, true));
+        assert!(needs_submit(false, false, false, true, true));
+        // 显式 apply 无条件提交。
+        assert!(needs_submit(true, false, false, false, true));
+    }
+
+    #[test]
+    fn hot_replace_is_refused_when_picks_change() {
+        // 择优变化改的是游戏规则标记（槽位位），而热替换只 replace 桶规则：
+        // 放过去会让游戏流量继续走旧出口。必须回退完整事务。
+        assert!(!hot_replace_allowed(true, true, true, true));
+        // 其余条件任一不满足都拒绝。
+        assert!(!hot_replace_allowed(false, true, true, false));
+        assert!(!hot_replace_allowed(true, false, true, false));
+        assert!(!hot_replace_allowed(true, true, false, false));
+        // 四项都满足才允许。
+        assert!(hot_replace_allowed(true, true, true, false));
     }
 }

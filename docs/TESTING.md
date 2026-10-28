@@ -4,8 +4,8 @@
 
 ```sh
 # 单元/回归（无需网络、无需 root、无需路由器）
-cargo test --offline --lib          # 期望 392 passed; 0 failed
-cargo test --offline --bins         # 期望 2 passed（--reclaim 配置回落）
+cargo test --offline --lib          # 期望 395 passed; 0 failed
+cargo test --offline --bins         # 期望 4 passed（--reclaim 配置回落 + 下发门控）
 cargo test --offline --tests        # 期望 33 passed（跨层集成：config/failover/health/rules/scheduler/transaction）
 
 # Lint 与风格（提交前置条件，必须带 -D warnings）
@@ -99,7 +99,7 @@ gcc 14.4.0），`make package/luci-app-smartmwan/compile V=s` → **BUILD OK**�
 |---|---|---|
 | 1 | 能在 OpenWrt 25.12+ 安装 | **是（真机实证）**：ImmortalWrt SNAPSHOT 真机安装/升级/卸载全部通过，post-install/pre-deinstall 钩子按预期执行 |
 | 2 | 能构建 | **两侧都能**：`cargo build --offline`（WSL）+ 真实 SDK `make package/.../compile`（aarch64 musl）都通过 |
-| 3 | 能测试 | 能：392 lib + 2 bin 单测 + 33 条跨层集成测试（`tests/` 6 个文件）+ Lua 红线脚本 + WSL 真 nft/netlink 端到端 + 真机 ubus 29 方法往返 |
+| 3 | 能测试 | 能：395 lib + 4 bin 单测 + 33 条跨层集成测试（`tests/` 6 个文件）+ Lua 红线脚本 + WSL 真 nft/netlink 端到端 + 真机 ubus 29 方法往返 |
 | 4 | 零 Lua | 是，且有自动化证明（两个方向实测）；包依赖里也无任何 Lua 包 |
 | 5 | 后端为模块化 Rust 常驻服务 | **是（真机实证）**：守护进程常驻、procd 托管、SIGHUP 重载、SIGTERM 优雅关停、崩溃回收、幂等复核都在真机运转 |
 | 6 | 前端 7 页可用 | **服务端可用（真机实证）**：`admin/network/smartmwan` 7 页全部 200、菜单树正确下发；浏览器渲染待人工确认（需退出重登刷新菜单缓存） |

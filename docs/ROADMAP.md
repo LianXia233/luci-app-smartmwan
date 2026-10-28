@@ -66,7 +66,7 @@ DoD：
 
 ## M5 —— 规则层（游戏路由）（已完成）
 
-范围：`src/rules/{mod,matchers,presets,dns_sets}.rs`（现 2373 行，53 条单测）
+范围：`src/rules/{mod,matchers,presets,dns_sets}.rs`（现 2441 行，55 条单测）
 
 DoD：
 

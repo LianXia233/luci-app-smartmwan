@@ -39,7 +39,7 @@ tests/                  跨层集成测试（6 个文件 / 33 条用例）
 
 后端七层（config / system / health / scheduler / rules / transaction / rpc）+
 **守护进程入口** + **前端** + **打包**已实现，
-`cargo test --offline` = **392 lib + 2 bin + 33 集成测试，全部通过**。
+`cargo test --offline` = **395 lib + 4 bin + 33 集成测试，全部通过**。
 RPC 层提供 29 个方法（Unix socket + JSON 统一信封 + `SO_PEERCRED` ACL + 脱敏审计）；
 守护进程 `smartmwand` 常驻运行：探测环、调度环（`Scheduler::decide` → `Coordinator::submit`，
 桶图单独变化走 `replace rule` 热替换）、域名集合刷新环、SIGHUP 重载、SIGTERM 优雅关停
@@ -104,8 +104,8 @@ install 段等价组装，成功后自动创建 Release（tag `v<PKG_VERSION>`�
 ## 开发环境命令
 
 ```sh
-cargo test --offline --lib                           # 单元测试（392 条，无需网络/root/路由器）
-cargo test --offline --bins                          # bin 测试（2 条：--reclaim 配置回落）
+cargo test --offline --lib                           # 单元测试（395 条，无需网络/root/路由器）
+cargo test --offline --bins                          # bin 测试（4 条：--reclaim 配置回落 + 下发门控）
 cargo test --offline --tests                         # 集成测试（33 条：config/failover/health/rules/scheduler/transaction）
 cargo clippy --offline --all-targets -- -D warnings  # Lint：必须 0 警告
 cargo fmt --all -- --check                           # 风格：必须无差异

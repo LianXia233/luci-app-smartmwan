@@ -14,9 +14,31 @@
   打包借 SDK 的 `apk mkpkg`，文件树由 `scripts/build-apk.sh` 按 Makefile 的 install 段
   等价组装（含 apk 需要的 `.list`/`.conffiles`/`.conffiles_static`，属主 chown 成 root）。
   打包成功后自动创建 GitHub Release（tag `v<PKG_VERSION>`，同名则覆盖附件）。
+* **删除死 feature `unprivileged-tests`**（`Cargo.toml`）：声明后全仓零引用、
+  Makefile 也从不打开，留着只会让人以为构建存在两套路径。同时把清单里误引的
+  `docs/architecture.md「依赖策略」`改为实际存在的 `docs/ARCHITECTURE.md` §7。
 
 ### 修复
 
+* **游戏规则 slug 跨轮漂移**（`src/rules/mod.rs`）：slug 原先只在「本轮通过状态过滤的
+  规则」上分配，一条 pending（尚无择优结论）或 follow 规则恢复下发时，排在它后面的规则
+  会整体改名 —— nft 标签随之变化，内核 counter 归零、命中数错位。改为新增
+  `game_slugs()` 先对**全部**规则按 `(priority, name)` 分配，`compile()` 与 RPC 共用。
+* **`getGames` 命中数按原始名归属**（`src/rpc/mod.rs`）：原用 `slug_of(name)` 自行计算，
+  未做重名消歧 —— 中文名（slug 为空）永远显示 null，同 slug 冲突时把 A 的计数记到 B 头上。
+  改用 `rules::game_slugs()` 的映射查内核计数。
+* **择优结果变化不触发下发**（`src/main.rs`）：`cycle()` 原先只看桶图变化与配置指纹，
+  `selection = best` 的评分变化但桶图未变时永不提交，内核停留在旧出口。现记录
+  `last_picks` 并把 `picks_changed` 纳入 `needs_submit()`。
+* **桶热替换的适用条件不足**（`src/main.rs`）：择优变化改的是游戏规则的标记（槽位位），
+  而热替换只 `replace` 桶规则，会留下旧落点。新增 `hot_replace_allowed()`，择优变化时
+  回退完整事务。
+* **决策代际与热替换前提矛盾**（`src/main.rs`）：`gen` 原先在 `decide()` 桶图变化时递增，
+  而 `gen` 会写进每条游戏规则的标记 —— 桶图变化时游戏规则也跟着变，「除桶图外逐字节
+  相同」的热替换前提不成立、快照与内核分叉。改为只在完整事务提交时递增。
+* **失败的提交不再重试**（`src/main.rs`）：桶图单次提交失败后，下一轮变化标志相对上一轮
+  **决策**为假，`cycle()` 在退避检查之前提前返回，重试逻辑永远不可达。`needs_submit()`
+  现在在 `!last_ok` 时强制提交，再由 `SUBMIT_RETRY_BACKOFF_MS` 节流。
 * **日志时间戳在西半球偏几小时**（`src/logging.rs`）：时区偏移缓存量原为无符号，
   负的 `tm_gmtoff` 被吞成 0，整机日志按 UTC 记时；改为有符号 `AtomicI64` 并保留负值。
 * **CLI 选项缺值被静默忽略**（`src/main.rs`）：`--log-level` / `--log-file` 后面没跟值
@@ -38,7 +60,7 @@
 
 ### 文档
 
-* 全仓数字与状态按本轮实测重测：392 lib + 2 bin + 33 集成测试、RPC 29 方法；
+* 全仓数字与状态按本轮实测重测：395 lib + 4 bin + 33 集成测试、RPC 29 方法；
   `docs/PROGRESS.md` §9.1、`docs/TESTING.md` §6、`docs/HANDOVER.md`、
   `docs/ROADMAP.md` M10 的过期表述已更正，`tests/` 集成测试状态由「未写」改为已落地。
 

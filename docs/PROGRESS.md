@@ -8,7 +8,7 @@
 ## 1. 一句话状态
 
 后端七层（配置 / 系统交互 / 健康 / 调度 / 规则 / 事务 / **RPC**）+ **守护进程入口** +
-**前端** + **打包**已完成，**392 lib + 2 bin + 33 集成测试全绿**；RPC 层 29 个方法、守护进程周期循环、
+**前端** + **打包**已完成，**395 lib + 4 bin + 33 集成测试全绿**；RPC 层 29 个方法、守护进程周期循环、
 CLI、rpcd ucode 桥（方法级 ACL）+ 7 个 LuCI 视图、OpenWrt 25.12 apk 打包（含四个维护脚本
 与同源安装期文件）都已落地，**真实 SDK 产物已通过逐项校验**；只剩目标设备验收（M10）。
 规则层的落点：M5 时它的产物只被单测喂进数据面生成器，现在由事务层真正调用
@@ -25,7 +25,7 @@ apk 在真实 SDK（mediatek/filogic aarch64 musl）构建成功并解包核对�
 ## 2. 可复核指标
 
 ```sh
-cargo test --offline --lib                          # 期望：392 passed; 0 failed
+cargo test --offline --lib                          # 期望：395 passed; 0 failed
 cargo test --offline --tests                        # 期望：33 条集成测试全绿
 cargo clippy --offline --all-targets -- -D warnings # 期望：0 警告
 cargo fmt --all -- --check                          # 期望：无差异
@@ -38,8 +38,8 @@ find src -name '*.rs' -print0 | xargs -0 cat | wc -l # 行数口径，见 §3 �
 
 | 命令 | 结果 |
 |---|---|
-| `cargo test --offline --lib` | `392 passed; 0 failed; 0 ignored` 用时 ~0.7s |
-| `cargo test --offline --bins` | `2 passed; 0 failed`（reclaim 配置回落两条） |
+| `cargo test --offline --lib` | `395 passed; 0 failed; 0 ignored` 用时 ~0.7s |
+| `cargo test --offline --bins` | `4 passed; 0 failed`（reclaim 配置回落两条 + 下发门控两条） |
 | `cargo test --offline --tests` | `33 passed; 0 failed`（config 6 / failover 6 / health 4 / rules 5 / scheduler 6 / transaction 6） |
 | `./scripts/no-lua-check.sh` | 退出码 0；注入 `src/accidentally_controller.lua` 或 `require("luci.dispatcher")` 后退出码 1（已实测两个方向） |
 | `cargo clippy --offline --all-targets -- -D warnings` | **通过，0 警告** |
@@ -57,13 +57,13 @@ find src -name '*.rs' -print0 | xargs -0 cat | wc -l # 行数口径，见 §3 �
 | `src/system/` | 8659 | 118 | 代码完成 / 待真机 | netlink、route、interface、conntrack、exec、firewall（`probe_caps`、`HandleOps`、`include_file_text()`；WSL 真 nft/netlink 已验证） |
 | `src/health/` | 3310 | 50 | 完成 | 四类探测 + 滑窗指标 + 状态机 + Registry |
 | `src/scheduler/` | 3672 | 60 | 完成 | balancing / failover / latency / hysteresis / 装配层 |
-| `src/rules/` | 2373 | 53 | 完成 | matchers / presets / dns_sets / compile；**调用者是 `transaction.rs`** |
+| `src/rules/` | 2441 | 55 | 完成 | matchers / presets / dns_sets / compile；**调用者是 `transaction.rs`** |
 | `src/logging.rs` | 539 | 5 | 完成 | 分级 + 环形缓冲 + 轮转 + 脱敏（`recent()`/`dropped()`） |
 | `src/transaction.rs` | 2322 | 24 | 代码完成 / 待真机 | 单事务锁 + 固定阶段编排 + 逆序回滚 + last-good 快照 + 残留回收 |
-| `src/rpc/` | 2588 | 25 | 代码完成 / 待真机 | 29 方法 + 统一信封 + `SO_PEERCRED` ACL + 脱敏审计 |
-| `src/main.rs` | 1574 | 2 | 代码完成 / 待真机 | 守护进程装配 + 周期循环 + 热替换 + 域名刷新环 + 信号 + CLI（含 `--dump-include`/`--reclaim`；reclaim 配置回落有 bin 单测） |
+| `src/rpc/` | 2638 | 26 | 代码完成 / 待真机 | 29 方法 + 统一信封 + `SO_PEERCRED` ACL + 脱敏审计 |
+| `src/main.rs` | 1653 | 4 | 代码完成 / 待真机 | 守护进程装配 + 周期循环 + 热替换 + 下发门控 + 域名刷新环 + 信号 + CLI（含 `--dump-include`/`--reclaim`；reclaim 配置回落与下发门控有 bin 单测） |
 
-合计 `src/**/*.rs` = **29,405** 行。`transaction.rs` 的内部构成：非测试 1,521 行
+合计 `src/**/*.rs` = **29,602** 行。`transaction.rs` 的内部构成：非测试 1,521 行
 （`Stage`/`Decision`/`FirewallExec`/`Plan`/`Receipt`/`Coordinator`），
 `#[cfg(test)] mod tests` 起于第 1522 行，测试 801 行。
 
@@ -74,10 +74,10 @@ find src -name '*.rs' -print0 | xargs -0 cat | wc -l # 行数口径，见 §3 �
 按子模块的测试分布（用于判断「哪里测得厚、哪里薄」）：
 
 ```text
-system::firewall   30   rpc::tests         25   transaction         24
+system::firewall   30   rpc::tests         26   transaction         24
 system::route      20   config::validate   20   health::tests       19
 system::netlink    17   system::interface  17   scheduler::balancing 17
-scheduler::tests   16   rules::tests       16   system::tests       15
+scheduler::tests   16   rules::tests       18   system::tests       15
 rules::dns_sets    15   config::tests      14   scheduler::failover 12
 rules::matchers    12   health::probe      12   system::exec        11
 health::state      11   rules::presets     10   config::uci         10
@@ -86,7 +86,7 @@ config::schema      7   scheduler::hysteresis 6  logging              5
 core_tests          6
 ```
 
-合计 392（`config 51 / system 118 / health 50 / scheduler 60 / rules 53 / logging 5 / lib 6 / transaction 24 / rpc 25`）。
+合计 395（`config 51 / system 118 / health 50 / scheduler 60 / rules 55 / logging 5 / lib 6 / transaction 24 / rpc 26`）。
 复核命令：`cargo test --offline --lib -- --list` 后按模块前缀计数。
 
 ## 4. 目录现状（诚实版）
@@ -354,7 +354,7 @@ FirewallVerify 阶段对 `list chain` 报 no-such-table 没有豁免（FirewallA
 
 方法表 23 → **29**；`src/rpc/mod.rs::METHODS`、`docs/ARCHITECTURE.md` §6、
 `root/usr/share/rpcd/ucode/smartmwan.uc`、`acl.d` 四处已同步，6 条新单测（当时 388 全绿）；
-此后又补了跨层集成测试与本轮审查修复，当前基线 **392 lib + 2 bin + 33 集成**（2026-10-28）。
+此后又补了跨层集成测试与本轮审查修复，当前基线 **395 lib + 4 bin + 33 集成**（2026-10-28）。
 
 | 任务书方法 | 本仓方法名 | 落地形态 |
 |---|---|---|
