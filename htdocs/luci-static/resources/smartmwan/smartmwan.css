@@ -76,7 +76,7 @@ body,
 
 	/* 形状：卡片 12、输入 4、徽标 8、弹窗 24、底部面板 28、按钮全圆角。 */
 	--smw-radius-card: 12px;
-	--smw-radius-field: 4px;
+	--smw-radius-field: 8px;
 	--smw-radius-chip: 8px;
 	--smw-radius-dialog: 24px;
 	--smw-radius-sheet: 28px;
@@ -889,23 +889,26 @@ html[data-darkmode=true] .smw-root {
 	display: none;
 }
 
-/* 输入控件：MD3 outlined —— 1dp outline、聚焦 2dp primary、圆角 4dp。
- * 高度与按钮对齐（40dp），排在同一行时基面一致。 */
+/* 输入控件：MD3 filled —— 填充底色、顶部 8dp 圆角、底部 1dp 强调线；
+ * 聚焦时底线升为 2dp 主色（inset box-shadow 模拟，不改盒模型不跳动）。
+ * 这是 Google MD3 最具辨识度的输入形态，按钮/开关/卡片同族。 */
 .smw-input,
 .smw-textarea,
 .smw-select {
 	width: 100%;
 	min-height: var(--smw-control-h);
 	padding: 8px 12px;
-	border: 1px solid var(--smw-outline);
-	border-radius: var(--smw-radius-field);
-	background: var(--smw-surface);
+	border: none;
+	border-radius: var(--smw-radius-field) var(--smw-radius-field) 0 0;
+	background-color: var(--smw-surface-container-high);
+	background-color: color-mix(in srgb, var(--smw-on-surface) 6%, var(--smw-surface));
 	color: var(--smw-on-surface);
 	font: inherit;
 	font-size: 14px;
 	line-height: 20px;
-	transition: border-color var(--smw-dur-fast) var(--smw-ease),
-		box-shadow var(--smw-dur-fast) var(--smw-ease);
+	box-shadow: inset 0 -1px 0 var(--smw-on-surface-variant);
+	transition: box-shadow var(--smw-dur-fast) var(--smw-ease),
+		background-color var(--smw-dur-fast) var(--smw-ease);
 }
 
 /* 兼容旧的 smw.select / smw.number 零件（它们在 .smw-field 里生成原生控件）。 */
@@ -918,13 +921,15 @@ html[data-darkmode=true] .smw-root {
 	width: 100%;
 	min-height: var(--smw-control-h);
 	padding: 8px 12px;
-	border: 1px solid var(--smw-outline);
-	border-radius: var(--smw-radius-field);
-	background: var(--smw-surface);
+	border: none;
+	border-radius: var(--smw-radius-field) var(--smw-radius-field) 0 0;
+	background-color: var(--smw-surface-container-high);
+	background-color: color-mix(in srgb, var(--smw-on-surface) 6%, var(--smw-surface));
 	color: var(--smw-on-surface);
 	font: inherit;
 	font-size: 14px;
 	line-height: 20px;
+	box-shadow: inset 0 -1px 0 var(--smw-on-surface-variant);
 }
 
 .smw-input:hover:not(:disabled):not([readonly]),
@@ -932,7 +937,7 @@ html[data-darkmode=true] .smw-root {
 .smw-select:hover:not(:disabled),
 .smw-field select:hover:not(:disabled),
 .smw-field input:hover:not(:disabled):not([readonly]) {
-	border-color: var(--smw-on-surface-variant);
+	box-shadow: inset 0 -1px 0 var(--smw-on-surface);
 }
 
 .smw-input:focus,
@@ -941,9 +946,8 @@ html[data-darkmode=true] .smw-root {
 .smw-field select:focus,
 .smw-field input:focus,
 .smw-field textarea:focus {
-	border-color: var(--smw-primary);
-	/* 内描边模拟 2dp 聚焦边：不改变盒模型，控件不会因为聚焦而跳动。 */
-	box-shadow: inset 0 0 0 1px var(--smw-primary);
+	/* 聚焦：底线升为 2dp 主色 —— filled 字段的核心识别点。 */
+	box-shadow: inset 0 -2px 0 var(--smw-primary);
 	outline: none;
 }
 
@@ -952,34 +956,36 @@ html[data-darkmode=true] .smw-root {
 .smw-select:disabled,
 .smw-field input:disabled,
 .smw-field select:disabled {
-	background: var(--smw-surface-container);
+	background-color: var(--smw-surface-container);
 	color: var(--smw-on-surface-variant);
 	cursor: not-allowed;
+	box-shadow: none;
 }
 
 .smw-input[readonly],
 .smw-textarea[readonly] {
-	background: var(--smw-surface-container);
+	background-color: var(--smw-surface-container);
 }
 
-/* 校验失败：边框与错误行同时标红，不只靠颜色 —— 错误行有文字，读屏能念。 */
+/* 校验失败：底线与错误行同时标红，不只靠颜色 —— 错误行有文字，读屏能念。 */
 .smw-field-invalid .smw-input,
 .smw-field-invalid .smw-textarea,
 .smw-field-invalid .smw-select,
 .smw-field-invalid input,
 .smw-field-invalid select,
 .smw-field-invalid textarea {
-	border-color: var(--smw-error);
+	box-shadow: inset 0 -2px 0 var(--smw-error);
 }
 
 .smw-field-invalid .smw-input:focus,
 .smw-field-invalid input:focus {
-	box-shadow: inset 0 0 0 1px var(--smw-error);
+	box-shadow: inset 0 -2px 0 var(--smw-error);
 }
 
-/* 下拉箭头自绘（不依赖主题的 select 皮肤）：data URI 里写死 outline 色，
- * 暗色下与背景对比仍然足够；不引外部图标字体。 */
-.smw-select {
+/* select 的下拉箭头自绘（appearance:none 关掉原生皮肤；chevron 用固定中性灰，
+ * 明暗背景下都可见）。 */
+.smw-select,
+.smw-field select {
 	appearance: none;
 	-webkit-appearance: none;
 	padding-right: 36px;
@@ -1046,6 +1052,7 @@ input[type="checkbox"].smw-switch {
 	border: 2px solid var(--smw-outline);
 	border-radius: 16px;
 	background-color: var(--smw-surface-container-high);
+	background-color: color-mix(in srgb, var(--smw-on-surface) 6%, var(--smw-surface));
 	/* 16dp 拇指：圆心距左边框内缘 10px（4px 边距 + 2px 边框 + 半径 8 − 2px 重叠补偿）。 */
 	background-image: radial-gradient(circle at 12px center, var(--smw-outline) 0 8px, transparent 8.5px);
 	background-repeat: no-repeat;

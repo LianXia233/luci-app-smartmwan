@@ -12,6 +12,7 @@
 'require view';
 'require rpc';
 'require ui';
+'require fs';
 
 var ROOT = 'smw-failover-root';
 
@@ -34,9 +35,20 @@ return view.extend({
 	load: function() {
 		return Promise.all([
 			call('getFailover')(),
-			call('getConfig')()
+			call('getConfig')(),
+			/* 网口清单：fs.list 走 rpcd-mod-file（luci-base ACL 必授），
+			 * 不走 network.getDevices —— 后者依赖的 network ubus 方法在本机
+			 * ACL 未授，且 initNetworkState 会记忆化失败状态。 */
+			fs.list('/sys/class/net')
 		]).then(function(rv) {
-			return { failover: rv[0], config: rv[1] };
+			return {
+				failover: rv[0],
+				config: rv[1],
+				/* 系统当前已知网口（去掉回环）：供线路手动绑定设备用。 */
+				devices: (rv[2] || []).filter(function(e) { return e.type !== 'file'; })
+					.map(function(e) { return e.name; })
+					.filter(function(n) { return n && n !== 'lo'; })
+			};
 		}).catch(function(e) {
 			return { __error: errText(e) };
 		});
@@ -133,6 +145,37 @@ return view.extend({
 				E('div', { 'class': 'smw-form' }, orderFields.map(function(f) { return f.el; })),
 				E('p', { 'class': 'smw-muted' }, [
 					'数字越小越优先接管。主线路故障时按此顺序挑第一条可用线路。'
+				])
+			]));
+
+			/* 网口绑定：每条线路可手动指定网络设备；留空 = 跟随 netifd 自动识别。
+			 * 模组重拨后设备名可能漂移，手动绑定保证该线路始终落在预期网口，
+			 * 而不是被自动识别指到别的口上。 */
+			var deviceFields = wans.map(function(w) {
+				return Form.field({
+					label: w.name + ' 网口',
+					control: Form.select({
+						options: [ { value: '', label: '自动（跟随 netifd）' } ].concat(
+							(data.devices || []).map(function(d) {
+								return { value: d, label: d + (d === (w.device || '') ? '（当前）' : '') };
+							})
+						),
+						value: w.device || '',
+						onchange: function(v) {
+							self.stage(function(d) {
+								for (var i = 0; i < d.wans.length; i++)
+									if (d.wans[i].name === w.name)
+										d.wans[i].device = v;
+							});
+						}
+					}),
+					help: '留空 = 跟随 netifd 自动识别；手动绑定后该线路固定使用所选网口，自动探测不再改写。'
+				});
+			});
+			root.appendChild(smw.section('网口绑定', [
+				E('div', { 'class': 'smw-form' }, deviceFields.map(function(f) { return f.el; })),
+				E('p', { 'class': 'smw-muted' }, [
+					'改动先进入草稿，点「保存并应用」后下发；应用后线路按新网口重新探测。'
 				])
 			]));
 
@@ -247,7 +290,7 @@ return view.extend({
 			this.slot.removeChild(this.slot.firstChild);
 		if (this.draft == null)
 			return;
-		this.slot.appendChild(smartmwan.dirty('回切策略有未保存的修改', [
+		this.slot.appendChild(smartmwan.dirty('有未保存的修改（保存后仍需「应用」才会下发到内核）', [
 			smartmwan.button('保存', {
 				variant: 'text',
 				click: ui.createHandlerFn(self, 'saveConfig', false)
