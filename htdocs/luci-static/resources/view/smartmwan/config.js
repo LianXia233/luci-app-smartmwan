@@ -107,8 +107,8 @@ return view.extend({
 				required: true,
 				control: Form.number({
 					value: h.interval_ms, min: 100, max: 600000, step: 100,
-					onchange: function(ev) {
-						self.stage(function(d) { d.global.health.interval_ms = parseInt(ev.target.value, 10); });
+					onchange: function(v) {
+						self.stage(function(d) { d.global.health.interval_ms = parseInt(v, 10); });
 					}
 				}),
 				help: '太短会给线路与 CPU 增加负担，太长则故障发现不及时。',
@@ -119,8 +119,8 @@ return view.extend({
 				required: true,
 				control: Form.number({
 					value: h.timeout_ms, min: 10, max: 60000, step: 10,
-					onchange: function(ev) {
-						self.stage(function(d) { d.global.health.timeout_ms = parseInt(ev.target.value, 10); });
+					onchange: function(v) {
+						self.stage(function(d) { d.global.health.timeout_ms = parseInt(v, 10); });
 					}
 				}),
 				help: '必须小于探测周期，否则每轮都会被上一轮拖住。',
@@ -131,8 +131,8 @@ return view.extend({
 				required: true,
 				control: Form.number({
 					value: h.failure_threshold, min: 1, max: 100,
-					onchange: function(ev) {
-						self.stage(function(d) { d.global.health.failure_threshold = parseInt(ev.target.value, 10); });
+					onchange: function(v) {
+						self.stage(function(d) { d.global.health.failure_threshold = parseInt(v, 10); });
 					}
 				}),
 				help: '连续失败这么多次才判定线路故障。',
@@ -143,8 +143,8 @@ return view.extend({
 				required: true,
 				control: Form.number({
 					value: h.warmup_ms, min: 0, max: 600000, step: 1000,
-					onchange: function(ev) {
-						self.stage(function(d) { d.global.health.warmup_ms = parseInt(ev.target.value, 10); });
+					onchange: function(v) {
+						self.stage(function(d) { d.global.health.warmup_ms = parseInt(v, 10); });
 					}
 				}),
 				help: '恢复后先观察这么久再承载流量，避免刚恢复的线路被立刻压垮。',
@@ -407,7 +407,7 @@ return view.extend({
 			return;
 		}
 		var cfg = this.draft || this.base;
-		call('save')({ config: cfg }).then(function(env) {
+		call('save', { config: {} })({ config: cfg }).then(function(env) {
 			if (!env || !env.ok) {
 				smartmwan.notify(E('p', [
 					'保存失败：' + ((env && env.error && env.error.message) || '未知错误')

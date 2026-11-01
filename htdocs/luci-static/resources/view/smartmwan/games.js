@@ -190,7 +190,7 @@ return view.extend({
 			root.appendChild(smw.section('线路评分（游戏流量候选）', [
 				smw.table(
 					[ '线路', '评分', 'RTT', '抖动', '丢包', '状态', '可信' ],
-					quality.data.ranking.map(function(r) {
+					(quality.data.ranking || []).map(function(r) {
 						return [
 							r.wan,
 							r.score.toFixed(1),
@@ -206,7 +206,7 @@ return view.extend({
 			root.appendChild(smw.section('规则落点', [
 				smw.table(
 					[ '规则', '选路方式', '当前落点' ],
-					quality.data.rules.map(function(r) {
+					(quality.data.rules || []).map(function(r) {
 						return [
 							r.rule,
 							r.selection + (r.pin_wan ? '（固定 ' + r.pin_wan + '）' : ''),
@@ -278,8 +278,8 @@ return view.extend({
 
 		var wans = (this.base.wans || []);
 
-		var nameIn = Form.text({ value: rule.name, onchange: function(ev) { rule.name = String(ev.target.value || '').trim(); } });
-		var prioIn = Form.number({ value: rule.priority, min: 0, max: 65535, onchange: function(ev) { rule.priority = parseInt(ev.target.value, 10) || 0; } });
+		var nameIn = Form.text({ value: rule.name, onchange: function(v) { rule.name = String(v || '').trim(); } });
+		var prioIn = Form.number({ value: rule.priority, min: 0, max: 65535, onchange: function(v) { rule.priority = parseInt(v, 10) || 0; } });
 		var selIn = Form.select({ options: SELECTIONS, value: rule.selection, onchange: function(v) { rule.selection = v; } });
 		var pinIn = Form.select({
 			options: [ { value: '', label: '— 请选择线路 —' } ].concat(wans.map(function(w) {
@@ -289,12 +289,12 @@ return view.extend({
 			onchange: function(v) { rule.pin_wan = v; }
 		});
 		var protoIn = Form.select({ options: PROTOS, value: rule.proto, onchange: function(v) { rule.proto = v; } });
-		var tgtIn = Form.textarea({ value: linesToText(rule.targets), rows: 4, onchange: function(ev) { rule.targets = textToLines(ev.target.value); } });
-		var portIn = Form.textarea({ value: linesToText(rule.ports), rows: 3, onchange: function(ev) { rule.ports = textToLines(ev.target.value); } });
-		var domIn = Form.textarea({ value: linesToText(rule.domains), rows: 3, onchange: function(ev) { rule.domains = textToLines(ev.target.value); } });
-		var cmtIn = Form.text({ value: rule.comment, onchange: function(ev) { rule.comment = String(ev.target.value || ''); } });
-		var ciIn = Form.textarea({ value: linesToText(rule.client_ips), rows: 3, onchange: function(ev) { rule.client_ips = textToLines(ev.target.value); } });
-		var cmIn = Form.textarea({ value: linesToText(rule.client_macs), rows: 3, onchange: function(ev) { rule.client_macs = textToLines(ev.target.value); } });
+		var tgtIn = Form.textarea({ value: linesToText(rule.targets), rows: 4, onchange: function(v) { rule.targets = textToLines(v); } });
+		var portIn = Form.textarea({ value: linesToText(rule.ports), rows: 3, onchange: function(v) { rule.ports = textToLines(v); } });
+		var domIn = Form.textarea({ value: linesToText(rule.domains), rows: 3, onchange: function(v) { rule.domains = textToLines(v); } });
+		var cmtIn = Form.text({ value: rule.comment, onchange: function(v) { rule.comment = String(v || ''); } });
+		var ciIn = Form.textarea({ value: linesToText(rule.client_ips), rows: 3, onchange: function(v) { rule.client_ips = textToLines(v); } });
+		var cmIn = Form.textarea({ value: linesToText(rule.client_macs), rows: 3, onchange: function(v) { rule.client_macs = textToLines(v); } });
 		var enIn = Form.switch({ checked: rule.enabled, onchange: function(v) { rule.enabled = v; } });
 
 		/* Form.field 返回 {el, input, setError...} 对象 —— body 里必须传 .el

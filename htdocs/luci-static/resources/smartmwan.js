@@ -262,6 +262,8 @@ var smw = L.Class.extend({
 		if (e == null)
 			return '未知错误';
 		var m = (e && e.message != null) ? String(e.message) : String(e);
+		/* 去掉 LuCI 附带的堆栈行，只留首句（读屏与 toast 都不该念堆栈）。 */
+		m = m.split('\n')[0];
 		var ub = /failed with ubus code (-?\d+): (.+)$/.exec(m);
 		if (ub) {
 			var hints = {

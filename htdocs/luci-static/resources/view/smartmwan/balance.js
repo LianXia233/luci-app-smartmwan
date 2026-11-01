@@ -99,7 +99,7 @@ return view.extend({
 					required: true,
 					control: Form.number({
 						value: g.buckets, min: 2, max: 256, step: 2,
-						onchange: function(ev) {
+						onchange: function(v) {
 							self.stage(function(d) { d.global.buckets = parseInt(ev.target.value, 10); });
 						}
 					}),
@@ -121,7 +121,7 @@ return view.extend({
 					required: true,
 					control: Form.number({
 						value: g.rebalance_interval_ms, min: 0, max: 600000, step: 100,
-						onchange: function(ev) {
+						onchange: function(v) {
 							self.stage(function(d) { d.global.rebalance_interval_ms = parseInt(ev.target.value, 10); });
 						}
 					}),
@@ -142,7 +142,7 @@ return view.extend({
 							self.stage(function(d) {
 								for (var i = 0; i < d.wans.length; i++)
 									if (d.wans[i].name === w.name)
-										d.wans[i].weight = parseInt(ev.target.value, 10);
+										d.wans[i].weight = parseInt(v, 10);
 							});
 						}
 					}),
