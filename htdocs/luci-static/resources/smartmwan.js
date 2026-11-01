@@ -26,13 +26,15 @@
 /* 注意：L 与 E 由 LuCI 加载器注入为全局，无需声明；poll/rpc/uci 等模块必须显式
  * require —— 真机实证：漏声明时运行到 `poll.add` 抛 "poll is not defined"。 */
 
+var SMW_ASSET_VER = 2; /* 样式资源版本:CSS 变更时 +1,强制浏览器刷新 */
+
 /* 样式表注入：<link> + L.resource，不用内联 <style>；幂等（按 id 判重）。 */
 if (document.getElementById('smw-css-link') == null) {
 	var link = E('link', {
 		'id': 'smw-css-link',
 		'rel': 'stylesheet',
 		'type': 'text/css',
-		'href': L.resource('smartmwan/smartmwan.css')
+		'href': L.resource('smartmwan/smartmwan.css') + '?v=' + SMW_ASSET_VER
 	});
 	document.head.appendChild(link);
 }

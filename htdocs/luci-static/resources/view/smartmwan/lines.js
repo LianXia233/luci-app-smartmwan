@@ -15,10 +15,12 @@ function call(method) {
 	return rpc.declare({ object: 'smartmwan', method: method, reject: true });
 }
 
+/* 兼容旧版共享模块缓存:errText 缺失时退化为原始消息,页面不因混缓存崩溃 */
+var errText = smartmwan.errText || function(e) { return String(e && e.message || e); };
 return view.extend({
 	load: function() {
 		return call('getLines')().catch(function(e) {
-			return { __error: smartmwan.errText(e) };
+			return { __error: errText(e) };
 		});
 	},
 
@@ -114,7 +116,7 @@ return view.extend({
 				]), 'error');
 			smartmwan.refresh(self, ROOT);
 		}).catch(function(e) {
-			smartmwan.notify(E('p', [ 'RPC 失败：' + smartmwan.errText(e) ]), 'error');
+			smartmwan.notify(E('p', [ 'RPC 失败：' + errText(e) ]), 'error');
 		});
 	},
 

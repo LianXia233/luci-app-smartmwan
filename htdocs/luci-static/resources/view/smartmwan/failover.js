@@ -26,6 +26,8 @@ function call(method) {
 	return rpc.declare({ object: 'smartmwan', method: method, reject: true });
 }
 
+/* 兼容旧版共享模块缓存:errText 缺失时退化为原始消息,页面不因混缓存崩溃 */
+var errText = smartmwan.errText || function(e) { return String(e && e.message || e); };
 return view.extend({
 	draft: null,
 
@@ -36,7 +38,7 @@ return view.extend({
 		]).then(function(rv) {
 			return { failover: rv[0], config: rv[1] };
 		}).catch(function(e) {
-			return { __error: smartmwan.errText(e) };
+			return { __error: errText(e) };
 		});
 	},
 
@@ -274,7 +276,7 @@ return view.extend({
 			}
 			smartmwan.refresh(self, ROOT);
 		}).catch(function(e) {
-			smartmwan.notify(E('p', [ 'RPC 失败：' + smartmwan.errText(e) ]), 'error');
+			smartmwan.notify(E('p', [ 'RPC 失败：' + errText(e) ]), 'error');
 		});
 	},
 
@@ -303,12 +305,12 @@ return view.extend({
 			}
 			else {
 				smartmwan.notify(E('p', [
-					'设置失败：' + smartmwan.errText(env && env.error)
+					'设置失败：' + errText(env && env.error)
 				]), 'error');
 			}
 			smartmwan.refresh(self, ROOT);
 		}).catch(function(e) {
-			smartmwan.notify(E('p', [ 'RPC 失败：' + smartmwan.errText(e) ]), 'error');
+			smartmwan.notify(E('p', [ 'RPC 失败：' + errText(e) ]), 'error');
 		});
 	},
 
@@ -333,7 +335,7 @@ return view.extend({
 				]), 'warning');
 			smartmwan.refresh(self, ROOT);
 		}).catch(function(e) {
-			smartmwan.notify(E('p', [ 'RPC 失败：' + smartmwan.errText(e) ]), 'error');
+			smartmwan.notify(E('p', [ 'RPC 失败：' + errText(e) ]), 'error');
 		});
 	},
 
@@ -363,7 +365,7 @@ return view.extend({
 					]), 'error');
 				smartmwan.refresh(self, ROOT);
 			}).catch(function(e) {
-				smartmwan.notify(E('p', [ 'RPC 失败：' + smartmwan.errText(e) ]), 'error');
+				smartmwan.notify(E('p', [ 'RPC 失败：' + errText(e) ]), 'error');
 			});
 		});
 	},
@@ -379,7 +381,7 @@ return view.extend({
 				]), 'error');
 			smartmwan.refresh(self, ROOT);
 		}).catch(function(e) {
-			smartmwan.notify(E('p', [ 'RPC 失败：' + smartmwan.errText(e) ]), 'error');
+			smartmwan.notify(E('p', [ 'RPC 失败：' + errText(e) ]), 'error');
 		});
 	},
 
@@ -416,12 +418,12 @@ return view.extend({
 				]), r.ok ? 'info' : 'warning');
 			} else {
 				smartmwan.notify(E('p', [
-					'应用失败：' + smartmwan.errText(env.error)
+					'应用失败：' + errText(env.error)
 				]), 'error');
 			}
 			smartmwan.refresh(self, ROOT);
 		}).catch(function(e) {
-			smartmwan.notify(E('p', [ 'RPC 失败：' + smartmwan.errText(e) ]), 'error');
+			smartmwan.notify(E('p', [ 'RPC 失败：' + errText(e) ]), 'error');
 		});
 	},
 

@@ -1660,3 +1660,13 @@ input[type="checkbox"].smw-switch:disabled {
 		width: 100%;
 	}
 }
+
+/* 开关的伪元素一票否决：开关已改为渐变自绘，不再使用任何伪元素；
+ * 主题对原生 checkbox 的伪元素皮肤（Aurora 的 :is(input[type=checkbox]) 系列）
+ * 若叠加到本组件，会在轨道上再画一个带对勾的小方块（真机实测）。
+ * content:none + display:none 双保险，优先级足以压过主题的通用规则。 */
+input[type="checkbox"].smw-switch::before,
+input[type="checkbox"].smw-switch::after {
+	content: none !important;
+	display: none !important;
+}
