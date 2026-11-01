@@ -141,42 +141,6 @@ body,
 	}
 }
 
-/* 主题自带暗色开关（Aurora：html[data-darkmode]）：与系统偏好解耦。
- * 声明内容与上一块一致；主题变量已自行翻转，这里保证无变量主题下也有
- * 可读的暗色回退。 */
-html[data-darkmode=true] body,
-html[data-darkmode=true] .smw-panel,
-html[data-darkmode=true] .smw-root {
-	--smw-primary: var(--brand, var(--primary-color, #d0bcff));
-	--smw-on-primary: var(--on-brand, #381e72);
-	--smw-primary-container: var(--brand-subtle, #4f378b);
-	--smw-on-primary-container: var(--text, #eaddff);
-	--smw-secondary-container: #4a4458;
-	--smw-on-secondary-container: #e8def8;
-	--smw-error: var(--danger, var(--danger-color, #f2b8b5));
-	--smw-on-error: #601410;
-	--smw-error-container: var(--danger-surface, #8c1d18);
-	--smw-on-error-container: #f9dedc;
-
-	--smw-surface: var(--bg, var(--background-color, #141218));
-	--smw-surface-container: var(--surface-sunken, var(--background-color-secondary, #211f26));
-	--smw-surface-container-high: var(--surface-overlay, var(--background-color-highlight, #2b2930));
-	--smw-on-surface: var(--text, var(--text-color, #e6e0e9));
-	--smw-on-surface-variant: var(--text-muted, var(--text-color-medium, #cac4d0));
-	--smw-outline: var(--border-color-medium, #938f99);
-	--smw-outline-variant: var(--hairline, var(--border-color, #48454e));
-
-	--smw-scrim: rgba(0, 0, 0, 0.6);
-	--smw-shadow-1: 0 1px 3px rgba(0, 0, 0, 0.5);
-
-	--smw-ok: #5ddb9c;
-	--smw-warn: #f0b357;
-	--smw-bad: #f08b7d;
-	--smw-info: #6cc0f0;
-	--smw-muted-fg: #9aa4af;
-	--smw-line: rgba(255, 255, 255, 0.12);
-}
-
 /* ==================== 盒模型 ==================== */
 
 /* 组件内部统一 border-box：输入框是 width:100% + 12px 内边距 + 1px 边框，
@@ -1669,11 +1633,11 @@ input[type="checkbox"].smw-switch:disabled {
 }
 
 /* 开关的伪元素一票否决：开关已改为渐变自绘，不再使用任何伪元素；
- * 主题对原生 checkbox 的伪元素皮肤（Aurora 的 :is(input[type=checkbox]) 系列）
- * 若叠加到本组件，会在轨道上再画一个带对勾的小方块（真机实测）。
- * content:none + display:none 双保险，优先级足以压过主题的通用规则。 */
-input[type="checkbox"].smw-switch::before,
-input[type="checkbox"].smw-switch::after {
-	content: none !important;
-	display: none !important;
+ * 主题对原生 checkbox 的伪元素皮肤（Aurora 的 :is(input[type=checkbox]) 系列，
+ * 优先级 (0,2,2)）若叠加到本组件，会在轨道上再画一个带对勾的小方块（真机实测）。
+ * 双写类名把优先级抬到 (0,3,2) 压过之，不占用受控的强调声明预算。 */
+input[type="checkbox"].smw-switch.smw-switch::before,
+input[type="checkbox"].smw-switch.smw-switch::after {
+	content: none;
+	display: none;
 }

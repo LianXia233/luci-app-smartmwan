@@ -109,31 +109,31 @@ return view.extend({
 			var rules = (this.draft || this.base).games || [];
 			var listEl = E('div', { 'class': 'smw-form' }, []);
 
-			rules.forEach(function(r) {
-				var runtime = hitsByName[r.name] || {};
+			rules.forEach(function(g) {
+				
 				var kv = [
-					[ '选路', selectionLabel(r.selection, r.pin_wan) ],
-					[ '目标', (r.targets || []).join('、') || '—' ],
-					[ '端口', (r.ports || []).join('、') || '任意' ],
-					[ '域名', (r.domains || []).join('、') || '—' ],
-					[ '优先级', String(r.priority) ]
+					[ '选路', selectionLabel(g.selection, g.pin_wan) ],
+					[ '目标', (g.targets || []).join('、') || '—' ],
+					[ '端口', (g.ports || []).join('、') || '任意' ],
+					[ '域名', (g.domains || []).join('、') || '—' ],
+					[ '优先级', String(g.priority) ]
 				];
-				if (r.comment)
-					kv.push([ '备注', r.comment ]);
+				if (g.comment)
+					kv.push([ '备注', g.comment ]);
 
 				listEl.appendChild(E('div', { 'class': 'smw-line-card' }, [
 					E('div', { 'class': 'smw-line-head' }, [
-						E('strong', {}, [ r.name ]),
-						r.enabled ? smw.stateBadge('healthy', '启用') : smw.stateBadge('unknown', '停用'),
-						r.preset ? E('span', { 'class': 'smw-badge smw-badge-info' }, [ '预置' ])
+						E('strong', {}, [ g.name ]),
+						g.enabled ? smw.stateBadge('healthy', '启用') : smw.stateBadge('unknown', '停用'),
+						g.preset ? E('span', { 'class': 'smw-badge smw-badge-info' }, [ '预置' ])
 							: E('span', { 'class': 'smw-badge smw-badge-muted' }, [ '自定义' ]),
-						r.selection == 'pin' && r.pin_wan ? E('span', { 'class': 'smw-badge smw-badge-warn' }, [ '固定 ' + r.pin_wan ]) : '',
-						runtime.hits != null ? E('span', { 'class': 'smw-badge smw-badge-muted' }, [ '命中 ' + runtime.hits.packets + ' 包' ]) : ''
+						g.selection == 'pin' && g.pin_wan ? E('span', { 'class': 'smw-badge smw-badge-warn' }, [ '固定 ' + g.pin_wan ]) : '',
+						E('span', { 'class': 'smw-badge smw-badge-muted' }, [ '命中 ' + (g.hits == null ? '—' : g.hits.packets + ' 包') ])
 					]),
 					smw.kv(kv),
 					E('div', { 'class': 'smw-line-actions' }, [
-						smartmwan.button('编辑', { variant: 'tonal', click: ui.createHandlerFn(self, 'handleEditRule', r.name) }),
-						smartmwan.button('删除', { variant: 'text-danger', click: ui.createHandlerFn(self, 'handleDeleteRule', r.name) })
+						smartmwan.button('编辑', { variant: 'tonal', click: ui.createHandlerFn(self, 'handleEditRule', g.name) }),
+						smartmwan.button('删除', { variant: 'text-danger', click: ui.createHandlerFn(self, 'handleDeleteRule', g.name) })
 					])
 				]));
 			});
