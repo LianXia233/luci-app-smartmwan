@@ -29,8 +29,10 @@ var ALGORITHMS = [
 	{ value: 'least_traffic', label: '实时流量最少优先（动态重排）' }
 ];
 
-function call(method) {
-	return rpc.declare({ object: 'smartmwan', method: method, reject: true });
+function call(method, params) {
+	/* params 必须作为模板声明：本机 LuCI 的 rpc.declare 只把模板里
+	 * 出现的键装进请求，缺了模板实参会被整个丢弃（真机实测）。 */
+	return rpc.declare({ object: 'smartmwan', method: method, params: params, reject: true });
 }
 
 /* 兼容旧版共享模块缓存:errText 缺失时退化为原始消息,页面不因混缓存崩溃 */
@@ -267,7 +269,7 @@ return view.extend({
 			return;
 		}
 		var cfg = this.draft || this.base;
-		call('save')({ config: cfg }).then(function(env) {
+		call('save', { config: {} })({ config: cfg }).then(function(env) {
 			if (!env || !env.ok) {
 				smartmwan.notify(E('p', [
 					'保存失败：' + ((env && env.error && env.error.message) || '未知错误')

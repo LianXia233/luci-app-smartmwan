@@ -36,8 +36,10 @@ var LOG_LEVELS = [
 	{ value: 'trace', label: 'trace（最细，短时排障用）' }
 ];
 
-function call(method) {
-	return rpc.declare({ object: 'smartmwan', method: method, reject: true });
+function call(method, params) {
+	/* params 必须作为模板声明：本机 LuCI 的 rpc.declare 只把模板里
+	 * 出现的键装进请求，缺了模板实参会被整个丢弃（真机实测）。 */
+	return rpc.declare({ object: 'smartmwan', method: method, params: params, reject: true });
 }
 
 /* 兼容旧版共享模块缓存:errText 缺失时退化为原始消息,页面不因混缓存崩溃 */
@@ -370,7 +372,7 @@ return view.extend({
 				return null;
 			var cfg = JSON.parse(JSON.stringify(self.base));
 			cfg.global.enabled = on;
-			return call('save')({ config: cfg }).then(function(env) {
+			return call('save', { config: {} })({ config: cfg }).then(function(env) {
 				if (!env || !env.ok)
 					throw new Error((env && env.error && env.error.message) || '未知错误');
 				return call('apply')();
@@ -516,7 +518,7 @@ return view.extend({
 			throw new Error('不是合法 JSON：' + (e && e.message ? e.message : e));
 		}
 
-		return call('validate')({ config: parsed }).then(function(env) {
+		return call('validate', { config: {} })({ config: parsed }).then(function(env) {
 			if (!env || !env.ok)
 				throw new Error('校验请求失败：' + ((env && env.error && env.error.message) || '未知错误'));
 			var rep = env.data || {};
@@ -525,7 +527,7 @@ return view.extend({
 				var first = issues.length ? (issues[0].path + '：' + issues[0].message) : '未知问题';
 				throw new Error('配置校验不通过（' + issues.length + ' 项），未写入。首个问题：' + first);
 			}
-			return call('save')({ config: parsed });
+			return call('save', { config: {} })({ config: parsed });
 		}).then(function(env) {
 			if (!env || !env.ok)
 				throw new Error('保存失败：' + ((env && env.error && env.error.message) || '未知错误'));

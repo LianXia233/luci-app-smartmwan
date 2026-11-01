@@ -23,8 +23,10 @@ var FAILBACKS = [
 	{ value: 'manual', label: '手动回切（主线路恢复后仍保持备用，需人工确认）' }
 ];
 
-function call(method) {
-	return rpc.declare({ object: 'smartmwan', method: method, reject: true });
+function call(method, params) {
+	/* params 必须作为模板声明：本机 LuCI 的 rpc.declare 只把模板里
+	 * 出现的键装进请求，缺了模板实参会被整个丢弃（真机实测）。 */
+	return rpc.declare({ object: 'smartmwan', method: method, params: params, reject: true });
 }
 
 /* 兼容旧版共享模块缓存:errText 缺失时退化为原始消息,页面不因混缓存崩溃 */
@@ -118,33 +120,36 @@ return view.extend({
 				])
 			]));
 
-			/* 备用顺序：给每条线路一个序号，按序号升序排列。
-			 * 拖拽排序好看但难用键盘操作，序号对所有人都一样的清楚。 */
-			var orderFields = wans.filter(function(w) {
-				return w.name !== g.primary;
-			}).map(function(w) {
+			/* 备用顺序：顺位下拉预设（不参与备用 / 第 N 顺位），不让用户填数字。
+			 * 改选即时写盘（setBackupOrder），其余线路自动顺延并重绘。 */
+			/* 候选排除主线路：global.primary 未显式设置时，以线路 role=primary
+			 * 为准 —— 否则主线路会混进备用顺位里。 */
+			var backupCandidates = wans.filter(function(w) {
+				return w.name !== g.primary && w.role !== 'primary';
+			});
+			var maxPos = backupCandidates.length;
+			var orderFields = backupCandidates.map(function(w) {
 				var idx = g.backup_order.indexOf(w.name);
 				return Form.field({
-					label: w.name,
-					control: Form.number({
-						value: idx < 0 ? '' : idx + 1,
-						min: 1, max: wans.length,
+					label: w.name + ' 备用顺位',
+					control: Form.select({
+						options: [ { value: '', label: '不参与备用' } ].concat(
+							Array.apply(null, { length: maxPos }).map(function(_, i) {
+								return { value: String(i + 1), label: '第 ' + (i + 1) + ' 顺位' };
+							})
+						),
+						value: idx < 0 ? '' : String(idx + 1),
 						onchange: function(v) {
-							self.reorder(w.name, parseInt(v, 10));
+							self.reorder(w.name, v === '' ? NaN : parseInt(v, 10));
 						}
 					}),
-					help: idx < 0 ? '留空 = 不参与备用' : '当前第 ' + (idx + 1) + ' 顺位',
-					validate: function(v) {
-						if (v === '' || v == null)
-							return null;
-						return Form.validators.intBetween(1, wans.length)(v);
-					}
+					help: idx < 0 ? '当前不参与备用' : '当前第 ' + (idx + 1) + ' 顺位，改选后即时生效'
 				});
 			});
 			root.appendChild(smw.section('备用顺序', [
 				E('div', { 'class': 'smw-form' }, orderFields.map(function(f) { return f.el; })),
 				E('p', { 'class': 'smw-muted' }, [
-					'数字越小越优先接管。主线路故障时按此顺序挑第一条可用线路。'
+					'顺位越靠前越优先接管。主线路故障时按此顺序挑第一条可用线路。'
 				])
 			]));
 
@@ -309,12 +314,13 @@ return view.extend({
 	/** 改主线路：单个字段，走专门的 RPC。 */
 	setPrimary: function(wan) {
 		var self = this;
-		call('setPrimary')({ wan: wan }).then(function(env) {
-			if (env && env.ok && env.data && env.data.saved) {
+		call('setPrimary', { wan: '' })({ wan: wan }).then(function(env) {
+			/* 便捷设置回执形如 {change, changed, receipt}：changed 才是落盘标志。 */
+			if (env && env.ok && env.data && (env.data.changed || env.data.saved)) {
 				smartmwan.notify(E('p', [ '主线路已设为 ' + wan ]), 'info');
 			} else {
 				smartmwan.notify(E('p', [
-					'设置失败：' + ((env && env.error && env.error.message) || '未变更')
+					'设置失败：' + ((env && env.error && env.error.message) || (env && env.data && env.data.change) || '未变更')
 				]), 'error');
 			}
 			smartmwan.refresh(self, ROOT);
@@ -338,13 +344,18 @@ return view.extend({
 				return;
 			}
 		}
-		call('setBackupOrder')({ order: without }).then(function(env) {
-			if (env && env.ok && env.data && env.data.saved) {
+		call('setBackupOrder', { order: [] })({ order: without }).then(function(env) {
+			/* 回执 {change, changed, receipt}：changed=true 表示已写盘。 */
+			if (env && env.ok && env.data && (env.data.changed || env.data.saved)) {
 				smartmwan.notify(E('p', [
-					without.length
+					env.data.change || (without.length
 						? '备用顺序已更新：' + without.join(' → ')
-						: '备用列表已清空'
+						: '备用列表已清空')
 				]), 'info');
+			}
+			else if (env && env.ok && env.data) {
+				/* ok 但 changed=false：顺序与现状一致，如实说明。 */
+				smartmwan.notify(E('p', [ '顺序未变化（与当前一致）' ]), 'info');
 			}
 			else {
 				smartmwan.notify(E('p', [
@@ -397,7 +408,7 @@ return view.extend({
 		}).then(function(ok) {
 			if (!ok)
 				return;
-			call('forceWan')({ wan: wan, confirm: true }).then(function(env) {
+			call('forceWan', { wan: '', confirm: true })({ wan: wan, confirm: true }).then(function(env) {
 				if (env && env.ok)
 					smartmwan.notify(E('p', [
 						'已提交强制切换（事务 ' + (env.data && env.data.id) + '）'
