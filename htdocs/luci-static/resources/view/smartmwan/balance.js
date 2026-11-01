@@ -99,8 +99,8 @@ return view.extend({
 					required: true,
 					control: Form.number({
 						value: g.buckets, min: 2, max: 256, step: 2,
-						onchange: function(v) {
-							self.stage(function(d) { d.global.buckets = parseInt(v, 10); });
+						onchange: function(ev) {
+							self.stage(function(d) { d.global.buckets = parseInt(ev.target.value, 10); });
 						}
 					}),
 					help: '桶越多分配越细，但规则数也随之增长；改动会重排全部新建连接。',
@@ -121,8 +121,8 @@ return view.extend({
 					required: true,
 					control: Form.number({
 						value: g.rebalance_interval_ms, min: 0, max: 600000, step: 100,
-						onchange: function(v) {
-							self.stage(function(d) { d.global.rebalance_interval_ms = parseInt(v, 10); });
+						onchange: function(ev) {
+							self.stage(function(d) { d.global.rebalance_interval_ms = parseInt(ev.target.value, 10); });
 						}
 					}),
 					help: '动态算法的重排节流：太小会让内核被反复重写。',
@@ -142,7 +142,7 @@ return view.extend({
 							self.stage(function(d) {
 								for (var i = 0; i < d.wans.length; i++)
 									if (d.wans[i].name === w.name)
-										d.wans[i].weight = parseInt(v, 10);
+										d.wans[i].weight = parseInt(ev.target.value, 10);
 							});
 						}
 					}),

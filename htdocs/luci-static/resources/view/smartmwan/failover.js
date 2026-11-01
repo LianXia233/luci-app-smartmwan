@@ -202,8 +202,8 @@ return view.extend({
 					required: true,
 					control: Form.number({
 						value: g.failback_delay_ms, min: 0, max: 3600000, step: 1000,
-						onchange: function(v) {
-							self.stage(function(d) { d.global.failback_delay_ms = parseInt(v, 10); });
+						onchange: function(ev) {
+							self.stage(function(d) { d.global.failback_delay_ms = parseInt(ev.target.value, 10); });
 						}
 					}),
 					help: '主线路健康后至少稳定这么久才回切；建议 ≥30000，避免抖动来回切。',
@@ -214,8 +214,8 @@ return view.extend({
 					required: true,
 					control: Form.number({
 						value: g.failback_success_threshold, min: 1, max: 100,
-						onchange: function(v) {
-							self.stage(function(d) { d.global.failback_success_threshold = parseInt(v, 10); });
+						onchange: function(ev) {
+							self.stage(function(d) { d.global.failback_success_threshold = parseInt(ev.target.value, 10); });
 						}
 					}),
 					help: '回切前要求主线路连续探测成功的最少次数。',
@@ -226,8 +226,8 @@ return view.extend({
 					required: true,
 					control: Form.number({
 						value: g.min_switch_interval_ms, min: 0, max: 3600000, step: 1000,
-						onchange: function(v) {
-							self.stage(function(d) { d.global.min_switch_interval_ms = parseInt(v, 10); });
+						onchange: function(ev) {
+							self.stage(function(d) { d.global.min_switch_interval_ms = parseInt(ev.target.value, 10); });
 						}
 					}),
 					help: '两次出口变更之间的兜底闸门，防止频繁切换。',
