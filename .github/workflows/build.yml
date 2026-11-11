@@ -47,7 +47,7 @@ jobs:
       run: ${{ steps.check.outputs.run }}
       version: ${{ steps.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 2        # 需要 HEAD^ 里的 Makefile 做比对
 
@@ -87,9 +87,9 @@ jobs:
     if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
 
@@ -117,7 +117,7 @@ jobs:
     if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -140,7 +140,7 @@ jobs:
     if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -248,7 +248,7 @@ jobs:
           echo "共 $(echo "$MANIFEST" | wc -l) 行清单"
 
       - name: 上传 APK
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: luci-app-smartmwan-${{ needs.gate.outputs.version }}-${{ env.PKG_ARCH }}
           path: dist/*.apk
@@ -263,10 +263,10 @@ jobs:
     permissions:
       contents: write        # 创建 tag / Release 需要写权限（其余 job 仍是只读）
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: 取回 APK
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: luci-app-smartmwan-${{ needs.gate.outputs.version }}-${{ env.PKG_ARCH }}
           path: dist
