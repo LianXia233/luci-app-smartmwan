@@ -12,6 +12,9 @@ name: build
 #   * APK 打包只借 SDK 里的 `apk mkpkg` 工具（不是编译器），文件树由
 #     scripts/build-apk.sh 按 Makefile 的 install 段等价组装。
 #
+# Action 运行时：统一使用 Node 24 主版本，避免 GitHub Actions 的 Node 20 弃用告警
+#   （checkout@v5 / setup-node@v5 / upload-artifact@v6 / download-artifact@v7）。
+#
 # 发布策略：**打包成功即发 Release**（不用手动去点）。
 #   tag 用 v<PKG_VERSION>（如 v0.5.0），标题带 -r<PKG_RELEASE>；
 #   同名 Release 已存在时用 --clobber 覆盖附件（重新打包不会失败）。
@@ -44,7 +47,7 @@ jobs:
       run: ${{ steps.check.outputs.run }}
       version: ${{ steps.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 2        # 需要 HEAD^ 里的 Makefile 做比对
 
@@ -84,9 +87,9 @@ jobs:
     if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
 
@@ -114,7 +117,7 @@ jobs:
     if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -137,7 +140,7 @@ jobs:
     if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -245,7 +248,7 @@ jobs:
           echo "共 $(echo "$MANIFEST" | wc -l) 行清单"
 
       - name: 上传 APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: luci-app-smartmwan-${{ needs.gate.outputs.version }}-${{ env.PKG_ARCH }}
           path: dist/*.apk
@@ -260,10 +263,10 @@ jobs:
     permissions:
       contents: write        # 创建 tag / Release 需要写权限（其余 job 仍是只读）
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 取回 APK
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: luci-app-smartmwan-${{ needs.gate.outputs.version }}-${{ env.PKG_ARCH }}
           path: dist
