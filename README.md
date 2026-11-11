@@ -176,7 +176,7 @@ flowchart TD
 
 ```sh
 # 复制安装包至路由器 /tmp 目录后执行安装（由于包未内嵌私有签名，需允许 untrusted）
-apk add --allow-untrusted /tmp/luci-app-smartmwan-0.6.0-r1.apk
+apk add --allow-untrusted /tmp/luci-app-smartmwan-0.7.0-r1.apk
 ```
 
 ### 3. 初次使用与启用
